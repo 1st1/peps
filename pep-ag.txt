@@ -255,7 +255,7 @@ The following methods and properties are defined:
 2. ``agen.__anext__()``: Returns an *awaitable*, that performs one
    asynchronous generator iteration when awaited.
 
-3. ``agen.anext(val)``: Returns an *awaitable*, that pushes the
+3. ``agen.asend(val)``: Returns an *awaitable*, that pushes the
    ``val`` object in the ``agen`` generator.  When the ``agen`` has
    not yet been iterated, ``val`` must be ``None``.
 
