@@ -44,7 +44,7 @@ As an illustration of the code quality improvement, consider the
 following class that prints numbers with a given delay once iterated::
 
     class ticker:
-        """Print numbers from 0 to `to` every `delay` seconds."""
+        """Yield numbers from 0 to `to` every `delay` seconds."""
 
         def __init__(self, delay, to):
             self.delay = delay
@@ -67,7 +67,7 @@ following class that prints numbers with a given delay once iterated::
 The same can be implemented as a much simpler asynchronous generator::
 
     async def ticker(delay, to):
-        """Print numbers from 0 to `to` every `delay` seconds."""
+        """Yield numbers from 0 to `to` every `delay` seconds."""
         i = 0
         while i < to:
             yield i
