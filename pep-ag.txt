@@ -198,10 +198,15 @@ To solve this problem we propose to add the following:
 
 3. Two new methods will be added to the ``sys`` module:
    ``set_asyncgen_finalizer`` and ``get_asyncgen_finalizer``.
-   The former allows to set a callback, which the interpreter will
-   call when the asynchronous generator is about to be garbage
-   collected.  The finalizer can then schedule generator's ``aclose()``
-   awaitable to the currently running event loop.
+
+   When an asynchronous generator is iterated for the first time,
+   it stores a reference to the current finalizer.  If there is none,
+   a ``RuntimeError`` is raised.
+
+   When an asynchronous generator is about to be garbage collected,
+   it calls its cached finalizer.  The assumption is that the finalizer
+   will schedule the ``aclose()`` awaitable to the loop that run
+   the coroutine that started the iteration.
 
    For instance, here's how asyncio can be modified to allow
    safe asynchronous generators finalization::
