@@ -68,6 +68,9 @@ The result of calling an *asynchronous generator function* is
 an *asynchronous generator object*, which implements the asynchronous
 iteration protocol defined in PEP 492.
 
+It is a ``SyntaxError`` to have a non-empty ``return`` statement in
+asynchronous generators.
+
 
 Asynchronous Iteration Protocol
 -------------------------------
