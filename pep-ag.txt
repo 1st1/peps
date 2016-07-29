@@ -16,30 +16,32 @@ Abstract
 ========
 
 PEP 492 introduced support for native coroutines and ``async``/``await``
-syntax to Python 3.5.  It is proposed here to extend Python's asynchronous
-capabilities by adding support for *asynchronous generators*.
+syntax to Python 3.5.  It is proposed here to extend Python's
+asynchronous capabilities by adding support for
+*asynchronous generators*.
 
 
 Rationale and Goals
 ===================
 
-Regular generators (introduced in PEP 255) enabled an elegant way of writing
-complex *data producers* and have them behave like an iterator.
+Regular generators (introduced in PEP 255) enabled an elegant way of
+writing complex *data producers* and have them behave like an iterator.
 
 However, currently there is no equivalent concept for the *asynchronous
 iteration protocol* (``async for``).  This makes writing asynchronous
 data producers unnecessarily complex, as one must define a class that
-implements ``__aiter__`` to be able to use it in an ``async for`` statement.
+implements ``__aiter__`` to be able to use it in an ``async for``
+statement.
 
-Essentially, the goals and rationale for PEP 255, applied to the asynchronous
-execution case, hold true for this proposal as well.
+Essentially, the goals and rationale for PEP 255, applied to the
+asynchronous execution case, hold true for this proposal as well.
 
 Performance is an additional point for this proposal: in our testing of
-the reference implementation, asynchronous generators are *2x* faster than
-an equivalent implemented as an asynchronous iterator.
+the reference implementation, asynchronous generators are *2x* faster
+than an equivalent implemented as an asynchronous iterator.
 
-As an illustration of the code quality improvement, consider the following
-class that prints numbers with a given delay once iterated::
+As an illustration of the code quality improvement, consider the
+following class that prints numbers with a given delay once iterated::
 
     class ticker:
         """Print numbers from 0 to `to` every `delay` seconds."""
@@ -116,7 +118,7 @@ asynchronous generator.
 Support for Asynchronous Iteration Protocol
 -------------------------------------------
 
-The protocol requires two magic methods to be implemented:
+The protocol requires two special methods to be implemented:
 
 1. An ``__aiter__`` method returning an *asynchronous iterator*.
 2. An ``__anext__`` method returning an *awaitable* object, which uses
@@ -178,9 +180,11 @@ To solve this problem we propose to do the following:
    returning a special *awaitable*.  When awaited it
    throws a ``GeneratorExit`` into the suspended generator and
    iterates over it until either a ``GeneratorExit`` or
-   a ``StopAsyncIteration`` occur.  This is very similar to what the
-   ``close()`` method does to regular Python generators, except that
-   an event loop is required to execute ``aclose()``.
+   a ``StopAsyncIteration`` occur.
+
+   This is very similar to what the ``close()`` method does to regular
+   Python generators, except that an event loop is required to execute
+   ``aclose()``.
 
 2. Raise a ``RuntimeError``, when an asynchronous generator executes
    a ``yield`` expression in its ``finally`` block (using ``await``
@@ -230,7 +234,7 @@ To solve this problem we propose to do the following:
            def _finalize_asyncgen(self, gen):
                self.create_task(gen.aclose())
 
-   ``set_asyncgen_finalizer`` is thread-specific, so several event
+   ``sys.set_asyncgen_finalizer`` is thread-specific, so several event
    loops running in parallel threads can use it safely.
 
 
@@ -268,7 +272,7 @@ The following methods and properties are defined:
                                # (after sleeping for 0.1 seconds)
 
 4. ``agen.athrow(typ, [val, [tb]])``: Returns an *awaitable*, that
-   throws an exception tuple into the ``agen`` generator.
+   throws an exception into the ``agen`` generator.
 
    Example::
 
@@ -293,7 +297,7 @@ The following methods and properties are defined:
    to the caller.
 
 6. ``agen.__name__`` and ``agen.__qualname__``: readable and writable
-   name and qualname attributes.
+   name and qualified name attributes.
 
 7. ``agen.ag_await``: The object that ``agen`` is currently awaiting on,
    or ``None``.
