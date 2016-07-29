@@ -8,34 +8,75 @@ Status: Draft
 Type: Standards Track
 Content-Type: text/x-rst
 Created: 28-Jul-2016
-Python-Version: 3.5
+Python-Version: 3.6
 Post-History:
 
 
 Abstract
 ========
 
+PEP 492 introduced support for native coroutines and ``async``/``await``
+syntax to Python 3.5.  It is proposed here to extend Python's asynchronous
+capabilities by adding support for *asynchronous generators*.
+
 
 Rationale and Goals
 ===================
 
-1. ``async for`` is incomplete without async gens
+Regular generators (introduced in PEP 255) enabled an elegant way of writing
+complex *data producers* and have them behave like an iterator.
 
-2. It's super hard to implement a complex async iterators using
-__anext__; async generators streamline that
+However, currently there is no equivalent concept for the *asynchronous
+iteration protocol* (``async for``).  This makes writing asynchronous
+data producers unnecessarily complex, as one must define a class that
+implements ``__aiter__`` to be able to use it in an ``async for`` statement.
 
-3. Speed -- async gens are 2x faster than implementing iters with
-__anext__.
+Essentially, the goals and rationale for PEP 255, applied to the asynchronous
+execution case, hold true for this proposal as well.
 
-4. New python power: streaming of messages from websoket or
-channels, pipelines for processing async data, @asynccontextmanager
-and alike.
+Performance is an additional point for this proposal: in our testing of
+the reference implementation, asynchronous generators are *2x* faster than
+an equivalent implemented as an asynchronous iterator.
+
+As an illustration of the code quality improvement, consider the following
+class that prints numbers with a given delay once iterated::
+
+    class ticker:
+        """Print numbers from 0 to `to` every `delay` seconds."""
+
+        def __init__(self, delay, to):
+            self.delay = delay
+            self.i = 0
+            self.to = to
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            i = self.i
+            if i >= self.to:
+                raise StopAsyncIteration
+            self.i += 1
+            if i:
+                await asyncio.sleep(self.delay)
+            return i
+
+
+The same can be implemented as a much simpler asynchronous generator::
+
+    async def ticker(delay, to):
+        """Print numbers from 0 to `to` every `delay` seconds."""
+        i = 0
+        while i < to:
+            yield i
+            i += 1
+            await asyncio.sleep(delay)
 
 
 Specification
 =============
 
-This proposal introduces a concept of asynchronous generators to
+This proposal introduces the concept of *asynchronous generators* to
 Python.
 
 This specification presumes knowledge of the implementation of
@@ -45,8 +86,8 @@ generators and coroutines in Python (PEP 342, PEP 380 and PEP 492).
 Asynchronous Generators
 -----------------------
 
-*Generators* in Python are defined by adding a ``yield`` keyword
-to functions::
+A Python *generator* is any function containing one or more ``yield``
+expressions::
 
     def func():            # a function
         return
@@ -68,12 +109,12 @@ The result of calling an *asynchronous generator function* is
 an *asynchronous generator object*, which implements the asynchronous
 iteration protocol defined in PEP 492.
 
-It is a ``SyntaxError`` to have a non-empty ``return`` statement in
-asynchronous generators.
+It is a ``SyntaxError`` to have a non-empty ``return`` statement in an
+asynchronous generator.
 
 
-Asynchronous Iteration Protocol
--------------------------------
+Support for Asynchronous Iteration Protocol
+-------------------------------------------
 
 The protocol requires two magic methods to be implemented:
 
@@ -99,50 +140,6 @@ Asynchronous generators define both of these methods::
         await gen.__anext__()
 
 
-async for
----------
-
-Asynchronous generators can be used with the ``async for`` statement::
-
-    async def ticker(delay, to):
-        """Print numbers from 0 to `to` every `delay` seconds."""
-        i = 0
-        while i < to:
-            yield i
-            i += 1
-            await asyncio.sleep(delay)
-
-    async for val in ticker(1, 100):
-        print(f'tick: {val}')
-
-An equivalent implementation of the ``ticker`` generator using
-asynchronous iteration protocol::
-
-    class ticker:
-        """Print numbers from 0 to `to` every `delay` seconds."""
-
-        def __init__(self, delay, to):
-            self.delay = delay
-            self.i = 0
-            self.to = to
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            i = self.i
-            if i >= self.to:
-                raise StopAsyncIteration
-            self.i += 1
-            if i:
-                await asyncio.sleep(self.delay)
-            return i
-
-Even for the simplest use cases, implementing iteration logic using
-asynchronous iteration protocol quickly leads to a hard to read and
-error-prone code.
-
-
 Finalization
 ------------
 
@@ -151,8 +148,8 @@ Because asynchronous generators are meant to be used from coroutines,
 they also require an event loop to run and finalize them.
 
 Asynchronous generators can have ``try..finally`` blocks, as well as
-``async with``.  It's important to provide a way to guarantee that
-even when partially iterated, and then garbage collected, generators can
+``async with``.  It is important to provide a guarantee that, even
+when partially iterated, and then garbage collected, generators can
 be safely finalized.  For example::
 
     async def square_series(con, to):
@@ -171,33 +168,38 @@ The above code defines an asynchronous generator that uses
 The generator is then iterated over with ``async for``, which interrupts
 the iteration at some moment.
 
-The ``square_series()`` generator will be then garbage collected,
+The ``square_series()`` generator will then be garbage collected,
 and without a mechanism to asynchronously close the generator, Python
 interpreter would not be able to do anything.
 
-To solve this problem we propose to add the following:
+To solve this problem we propose to do the following:
 
-1. Implement an ``aclose`` method on asynchronous generators.
-   ``aclose`` must return an *awaitable* object, which when awaited
-   will throw a ``GeneratorExit`` into the suspended generator, and
-   iterate over it until it raises ``GeneratorExit`` or
-   ``StopAsyncIteration``.  This is very similar to what method
-   ``close()`` does to regular Python generators, except that we need
-   an event loop to execute ``aclose()``.
+1. Implement an ``aclose`` method on asynchronous generators
+   returning a special *awaitable*.  When awaited it
+   throws a ``GeneratorExit`` into the suspended generator and
+   iterates over it until either a ``GeneratorExit`` or
+   a ``StopAsyncIteration`` occur.  This is very similar to what the
+   ``close()`` method does to regular Python generators, except that
+   an event loop is required to execute ``aclose()``.
 
-2. If the asynchronous generator executes a ``yield`` expression in
-   its ``finally`` block (using ``await`` is fine, though), a
-   ``RuntimeError`` is raised, and the finalization is aborted::
+2. Raise a ``RuntimeError``, when an asynchronous generator executes
+   a ``yield`` expression in its ``finally`` block (using ``await``
+   is fine, though)::
 
         async def gen():
             try:
                 yield
             finally:
-                yield                    # Can't use 'yield'
+                yield                    # Cannot use 'yield'
                 await asyncio.sleep(1)   # Can use 'await'
 
-3. Two new methods will be added to the ``sys`` module:
+3. Add two new methods to the ``sys`` module:
    ``set_asyncgen_finalizer`` and ``get_asyncgen_finalizer``.
+
+   The idea behind ``sys.set_asyncgen_finalizer`` is to allow event
+   loops to handle generators finalization, so that the end user
+   does not need to care about the finalization problem, and it just
+   works.
 
    When an asynchronous generator is iterated for the first time,
    it stores a reference to the current finalizer.  If there is none,
@@ -205,11 +207,11 @@ To solve this problem we propose to add the following:
 
    When an asynchronous generator is about to be garbage collected,
    it calls its cached finalizer.  The assumption is that the finalizer
-   will schedule the ``aclose()`` awaitable to the loop that run
-   the coroutine that started the iteration.
+   will schedule an ``aclose()`` call with the loop that was active
+   when the iteration started.
 
-   For instance, here's how asyncio can be modified to allow
-   safe asynchronous generators finalization::
+   For instance, here is how asyncio can be modified to allow
+   safe finalization of asynchronous generators::
 
        # asyncio/base_events.py
 
@@ -228,12 +230,8 @@ To solve this problem we propose to add the following:
            def _finalize_asyncgen(self, gen):
                self.create_task(gen.aclose())
 
-   Both functions are thread-specific, meaning that several event
-   loops running in parallel threads can use them safely.
-
-The idea behind ``sys.set_asyncgen_finalizer`` is to allow event loops
-to handle generators finalization, so that the end-users don't need
-to care about this problem.
+   ``set_asyncgen_finalizer`` is thread-specific, so several event
+   loops running in parallel threads can use it safely.
 
 
 Asynchronous Generator Object
@@ -334,7 +332,7 @@ Regular Generators
 ------------------
 
 There is no performance degradation for regular generators.
-The following micro benchmark runs for the same time on CPython with
+The following micro benchmark runs at the same speed on CPython with
 and without asynchronous generators::
 
     def gen():
@@ -389,9 +387,9 @@ However, in CPython 3.5.2, ``__aiter__`` was redefined to return
 asynchronous iterators directly.  To avoid breaking backwards
 compatibility, it was decided that Python 3.6 will support both
 ways: ``__aiter__`` can still return an *awaitable* with
-``DeprecationWarning`` being issued.
+a ``DeprecationWarning`` being issued.
 
-Because of this dual nature of ``__aiter__`` in Python 3.6, we can't
+Because of this dual nature of ``__aiter__`` in Python 3.6, we cannot
 add a synchronous implementation of ``aiter()`` built-in.  Therefore,
 it is proposed to wait until Python 3.7.
 
@@ -407,8 +405,8 @@ Asynchronous ``yield from``
 ---------------------------
 
 While it is theoretically possible to implement ``yield from`` support
-for asynchronous generators, it would require to seriously
-re-architecture current generators implementation.
+for asynchronous generators, it would require a serious redesign of the
+generator implementation.
 
 ``yield from`` is also less critical for asynchronous generators, since
 there is no need provide a mechanism of implementing another coroutines
@@ -424,12 +422,12 @@ simple ``async for`` loop can be used::
             yield v
 
 
-Why do we need ``asend`` and ``athrow`` methods
------------------------------------------------
+Why the ``asend`` and ``athrow`` methods are necessary
+------------------------------------------------------
 
-They allow to implement concepts similar to
-``contextlib.contextmanager`` but for asynchronous generators.
-For instance, with the current design, it is possible to implement
+They make it possible to implement concepts similar to
+``contextlib.contextmanager`` using asynchronous generators.
+For instance, with the proposed design, it is possible to implement
 the following pattern::
 
     @async_context_manager
@@ -443,11 +441,10 @@ the following pattern::
     async with ctx():
         await ...
 
-Another reason is that even if we don't expose ``asend`` and ``athrow``
-methods, it would still be possible to push data and throw exceptions
-into asynchronous generators using the ``__anext__`` object.  Since
-``__anext__`` method returns a coroutine-like *awaitable*, that defines
-``send`` and ``throw`` methods, it is possible to use them directly.
+Another reason is that it is possible to push data and throw exceptions
+into asynchronous generators using the object returned from ``__anext__``
+object, but it is hard to do that correctly.  Adding explicit ``asend``
+and ``athrow`` will pave a safe way to accomplish that.
 
 
 Implementation
