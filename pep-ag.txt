@@ -168,7 +168,7 @@ be safely finalized.  For example::
 The above code defines an asynchronous generator that uses
 ``async with`` to iterate over a database cursor in a transaction.
 The generator is then iterated over with ``async for``, which interrupts
-the iteration at some moment.
+the iteration at some point.
 
 The ``square_series()`` generator will then be garbage collected,
 and without a mechanism to asynchronously close the generator, Python
@@ -207,7 +207,9 @@ To solve this problem we propose to do the following:
 
    When an asynchronous generator is iterated for the first time,
    it stores a reference to the current finalizer.  If there is none,
-   a ``RuntimeError`` is raised.
+   a ``RuntimeError`` is raised.  This provides a strong guarantee that
+   every asynchronous generator object will always have a finalizer
+   installed by the correct event loop.
 
    When an asynchronous generator is about to be garbage collected,
    it calls its cached finalizer.  The assumption is that the finalizer
@@ -449,6 +451,33 @@ Another reason is that it is possible to push data and throw exceptions
 into asynchronous generators using the object returned from ``__anext__``
 object, but it is hard to do that correctly.  Adding explicit ``asend``
 and ``athrow`` will pave a safe way to accomplish that.
+
+
+Example
+=======
+
+A working example with the current reference implementation (will
+print numbers from 0 to 9 with one second delay)::
+
+    async def ticker(delay, to):
+        i = 0
+        while i < to:
+            yield i
+            i += 1
+            await asyncio.sleep(delay)
+
+
+    async def run():
+        async for i in ticker(1, 10):
+            print(i)
+
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(run())
+    finally:
+        loop.close()
 
 
 Implementation
