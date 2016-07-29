@@ -435,6 +435,12 @@ the following pattern::
     async with ctx():
         await ...
 
+Another reason is that even if we don't expose ``asend`` and ``athrow``
+methods, it would still be possible to push data and throw exceptions
+into asynchronous generators using the ``__anext__`` object.  Since
+``__anext__`` method returns a coroutine-like *awaitable*, that defines
+``send`` and ``throw`` methods, it is possible to use them directly.
+
 
 Implementation
 ==============
