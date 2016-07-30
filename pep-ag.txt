@@ -30,14 +30,14 @@ writing complex *data producers* and have them behave like an iterator.
 However, currently there is no equivalent concept for the *asynchronous
 iteration protocol* (``async for``).  This makes writing asynchronous
 data producers unnecessarily complex, as one must define a class that
-implements ``__aiter__`` to be able to use it in an ``async for``
-statement.
+implements ``__aiter__`` and ``__anext__`` to be able to use it in
+an ``async for`` statement.
 
 Essentially, the goals and rationale for PEP 255, applied to the
 asynchronous execution case, hold true for this proposal as well.
 
 Performance is an additional point for this proposal: in our testing of
-the reference implementation, asynchronous generators are *2x* faster
+the reference implementation, asynchronous generators are **2x** faster
 than an equivalent implemented as an asynchronous iterator.
 
 As an illustration of the code quality improvement, consider the
@@ -68,10 +68,8 @@ The same can be implemented as a much simpler asynchronous generator::
 
     async def ticker(delay, to):
         """Yield numbers from 0 to `to` every `delay` seconds."""
-        i = 0
-        while i < to:
+        for i in range(to):
             yield i
-            i += 1
             await asyncio.sleep(delay)
 
 
@@ -125,7 +123,8 @@ The protocol requires two special methods to be implemented:
    ``StopIteration`` exception to "yield" values, and
    ``StopAsyncIteration`` exception to signal the end of the iteration.
 
-Asynchronous generators define both of these methods::
+Asynchronous generators define both of these methods.  Let's manually
+iterate over a simple asynchronous generator::
 
     async def genfunc():
         yield 1
@@ -161,7 +160,7 @@ be safely finalized.  For example::
             async for row in cursor:
                 yield row['i'] ** 2
 
-    async for i in square_series(con, 100):
+    async for i in square_series(con, 1000):
         if i == 100:
             break
 
@@ -216,8 +215,8 @@ To solve this problem we propose to do the following:
    will schedule an ``aclose()`` call with the loop that was active
    when the iteration started.
 
-   For instance, here is how asyncio can be modified to allow
-   safe finalization of asynchronous generators::
+   For instance, here is how asyncio is modified to allow safe
+   finalization of asynchronous generators::
 
        # asyncio/base_events.py
 
@@ -265,13 +264,16 @@ The following methods and properties are defined:
            await asyncio.sleep(0.1)
            v = yield 42
            print(v)
-           await asyncio.sleep(0.1)
+           await asyncio.sleep(0.2)
 
        g = gen()
-       await g.send(None)      # Will return 42
-       await g.send('hello')   # Will print 'hello' and
-                               # raise StopAsyncIteration
-                               # (after sleeping for 0.1 seconds)
+
+       await g.asend(None)      # Will return 42 after sleeping
+                                # for 0.1 seconds.
+
+       await g.asend('hello')   # Will print 'hello' and
+                                # raise StopAsyncIteration
+                                # (after sleeping for 0.2 seconds.)
 
 4. ``agen.athrow(typ, [val, [tb]])``: Returns an *awaitable*, that
    throws an exception into the ``agen`` generator.
@@ -288,9 +290,12 @@ The following methods and properties are defined:
 
        g = gen()
        v = await g.asend(None)
-       print(v)                # Will print 'hello' after sleeping 0.1s
+       print(v)                # Will print 'hello' after
+                               # sleeping for 0.1 seconds.
+
        v = await g.athrow(ZeroDivisionError)
-       print(v)                # Will print 'world' after sleeping 0.2s
+       print(v)                # Will print 'world' after
+                               $ sleeping 0.2 seconds.
 
 5. ``agen.aclose()``: Returns an *awaitable*, that throws a
    ``GeneratorExit`` exception into the generator.  The *awaitable* can
@@ -301,11 +306,15 @@ The following methods and properties are defined:
 6. ``agen.__name__`` and ``agen.__qualname__``: readable and writable
    name and qualified name attributes.
 
-7. ``agen.ag_await``: The object that ``agen`` is currently awaiting on,
-   or ``None``.
+7. ``agen.ag_await``: The object that ``agen`` is currently *awaiting*
+   on, or ``None``.  This is similar to the currently available
+   ``gi_yieldfrom`` for generators and ``cr_await`` for coroutines.
 
 8. ``agen.ag_frame``, ``agen.ag_running``, and ``agen.ag_code``:
    defined in the same way as similar attributes of standard generators.
+
+``StopIteration`` and ``StopAsyncIteration`` are not propagated out of
+asynchronous generators, and are replaced with a ``RuntimeError``.
 
 
 New Standard Library Functions and Types
@@ -354,15 +363,14 @@ Improvements over asynchronous iterators
 ----------------------------------------
 
 The following micro-benchmark shows that asynchronous generators
-are about **2x faster** than asynchronous iterators implemented in
+are about **2.3x faster** than asynchronous iterators implemented in
 pure Python:
 
-    async def agen():
-        i = 0
-        while i < N:
-            yield i
-            i += 1
+    N = 10 ** 7
 
+    async def agen():
+        for i in range(N):
+            yield i
 
     class AIter:
         def __init__(self):
@@ -416,7 +424,7 @@ generator implementation.
 
 ``yield from`` is also less critical for asynchronous generators, since
 there is no need provide a mechanism of implementing another coroutines
-protocol on top of coroutines.  To compose asynchronous generators a
+protocol on top of coroutines.  And to compose asynchronous generators a
 simple ``async for`` loop can be used::
 
     async def g1():
@@ -460,10 +468,8 @@ A working example with the current reference implementation (will
 print numbers from 0 to 9 with one second delay)::
 
     async def ticker(delay, to):
-        i = 0
-        while i < to:
+        for i in range(to):
             yield i
-            i += 1
             await asyncio.sleep(delay)
 
 
