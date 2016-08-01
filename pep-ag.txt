@@ -137,8 +137,7 @@ iterate over a simple asynchronous generator::
     assert await gen.__anext__() == 1
     assert await gen.__anext__() == 2
 
-    with assertRaises(StopAsyncIteration):
-        await gen.__anext__()
+    await gen.__anext__()  # This line will raise StopAsyncIteration.
 
 
 Finalization
@@ -200,46 +199,46 @@ To solve this problem we propose to do the following:
                                          # RuntimeError.
 
 3. Add two new methods to the ``sys`` module:
-   ``set_asyncgen_finalizer`` and ``get_asyncgen_finalizer``.
+   ``set_asyncgen_finalizer()`` and ``get_asyncgen_finalizer()``.
 
-   The idea behind ``sys.set_asyncgen_finalizer`` is to allow event
-   loops to handle generators finalization, so that the end user
-   does not need to care about the finalization problem, and it just
-   works.
+The idea behind ``sys.set_asyncgen_finalizer()`` is to allow event
+loops to handle generators finalization, so that the end user
+does not need to care about the finalization problem, and it just
+works.
 
-   When an asynchronous generator is iterated for the first time,
-   it stores a reference to the current finalizer.  If there is none,
-   a ``RuntimeError`` is raised.  This provides a strong guarantee that
-   every asynchronous generator object will always have a finalizer
-   installed by the correct event loop.
+When an asynchronous generator is iterated for the first time,
+it stores a reference to the current finalizer.  If there is none,
+a ``RuntimeError`` is raised.  This provides a strong guarantee that
+every asynchronous generator object will always have a finalizer
+installed by the correct event loop.
 
-   When an asynchronous generator is about to be garbage collected,
-   it calls its cached finalizer.  The assumption is that the finalizer
-   will schedule an ``aclose()`` call with the loop that was active
-   when the iteration started.
+When an asynchronous generator is about to be garbage collected,
+it calls its cached finalizer.  The assumption is that the finalizer
+will schedule an ``aclose()`` call with the loop that was active
+when the iteration started.
 
-   For instance, here is how asyncio is modified to allow safe
-   finalization of asynchronous generators::
+For instance, here is how asyncio is modified to allow safe
+finalization of asynchronous generators::
 
-       # asyncio/base_events.py
+   # asyncio/base_events.py
 
-       class BaseEventLoop:
+   class BaseEventLoop:
 
-           def run_forever(self):
+       def run_forever(self):
+           ...
+           old_finalizer = sys.get_asyncgen_finalizer()
+           sys.set_asyncgen_finalizer(self._finalize_asyncgen)
+           try:
                ...
-               old_finalizer = sys.get_asyncgen_finalizer()
-               sys.set_asyncgen_finalizer(self._finalize_asyncgen)
-               try:
-                   ...
-               finally:
-                   sys.set_asyncgen_finalizer(old_finalizer)
-                   ...
+           finally:
+               sys.set_asyncgen_finalizer(old_finalizer)
+               ...
 
-           def _finalize_asyncgen(self, gen):
-               self.create_task(gen.aclose())
+       def _finalize_asyncgen(self, gen):
+           self.create_task(gen.aclose())
 
-   ``sys.set_asyncgen_finalizer`` is thread-specific, so several event
-   loops running in parallel threads can use it safely.
+``sys.set_asyncgen_finalizer()`` is thread-specific, so several event
+loops running in parallel threads can use it safely.
 
 
 Asynchronous Generator Object
@@ -397,7 +396,7 @@ Design Considerations
 ``aiter()`` and ``anext()`` builtins
 ------------------------------------
 
-Originally PEP 492 defined ``__aiter__`` as a method that should
+Originally, PEP 492 defined ``__aiter__`` as a method that should
 return an *awaitable* object, resulting in an asynchronous iterator.
 
 However, in CPython 3.5.2, ``__aiter__`` was redefined to return
@@ -423,7 +422,7 @@ Asynchronous ``yield from``
 
 While it is theoretically possible to implement ``yield from`` support
 for asynchronous generators, it would require a serious redesign of the
-generator implementation.
+generators implementation.
 
 ``yield from`` is also less critical for asynchronous generators, since
 there is no need provide a mechanism of implementing another coroutines
@@ -439,8 +438,8 @@ simple ``async for`` loop can be used::
             yield v
 
 
-Why the ``asend`` and ``athrow`` methods are necessary
-------------------------------------------------------
+Why the ``asend()`` and ``athrow()`` methods are necessary
+----------------------------------------------------------
 
 They make it possible to implement concepts similar to
 ``contextlib.contextmanager`` using asynchronous generators.
@@ -459,9 +458,15 @@ the following pattern::
         await ...
 
 Another reason is that it is possible to push data and throw exceptions
-into asynchronous generators using the object returned from ``__anext__``
-object, but it is hard to do that correctly.  Adding explicit ``asend``
-and ``athrow`` will pave a safe way to accomplish that.
+into asynchronous generators using the object returned from
+``__anext__`` object, but it is hard to do that correctly.  Adding
+explicit ``asend()`` and ``athrow()`` will pave a safe way to
+accomplish that.
+
+In terms of implementation, ``asend()`` is a slightly more generic
+version of ``__anext__``, and ``athrow()`` is very similar to
+``aclose()``.  Therefore having these methods defined for asynchronous
+generators does not add any extra complexity.
 
 
 Example
