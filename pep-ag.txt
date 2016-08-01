@@ -43,7 +43,7 @@ than an equivalent implemented as an asynchronous iterator.
 As an illustration of the code quality improvement, consider the
 following class that prints numbers with a given delay once iterated::
 
-    class ticker:
+    class Ticker:
         """Yield numbers from 0 to `to` every `delay` seconds."""
 
         def __init__(self, delay, to):
@@ -103,7 +103,7 @@ We propose to use the same approach to define
 
     async def asyncgen():  # an asynchronous generator function
         await smth()
-        yield val
+        yield 42
 
 The result of calling an *asynchronous generator function* is
 an *asynchronous generator object*, which implements the asynchronous
@@ -193,8 +193,11 @@ To solve this problem we propose to do the following:
             try:
                 yield
             finally:
-                yield                    # Cannot use 'yield'
-                await asyncio.sleep(1)   # Can use 'await'
+                await asyncio.sleep(1)   # Can use 'await'.
+
+                yield                    # Cannot use 'yield',
+                                         # this line will trigger a
+                                         # RuntimeError.
 
 3. Add two new methods to the ``sys`` module:
    ``set_asyncgen_finalizer`` and ``get_asyncgen_finalizer``.
