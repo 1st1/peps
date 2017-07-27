@@ -1,0 +1,117 @@
+PEP: 550
+Title: Execution Contexts
+Version: $Revision$
+Last-Modified: $Date$
+Author: Yury Selivanov <yury@magic.io>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 27-Jul-2017
+Python-Version: 3.7
+Post-History:
+
+
+Abstract
+========
+
+This PEP proposes a new mechanism to manage execution state--the
+logical environment in which a function, a thread, a generator,
+or a coroutine executes in.
+
+Some examples of where having a reliable state storage is required:
+
+ * Decimal contexts and ``numpy.errstate``;
+
+ * Context managers like ``warnings.catch_warnings``;
+
+ * Storing request-related data such as security tokens and request ID
+   in web applications;
+
+ * Profiling, collecting tracing data, and logging in complex and
+   large code bases.
+
+The current solution to store state is using a Thread-local Storage
+(TLS), which does not work for generators or coroutines.
+
+
+Rationale
+=========
+
+Traditionally a Thread-local Storage (TLS) is used for storing the
+state.  However, the major flaw of using the TLS is that it works only
+for multi-threaded code.  It is not possible to reliably contain the
+state within a generator or a coroutine.  For example, consider
+the following generator::
+
+    def calculate(precision, ...):
+        with decimal.localcontext() as ctx:
+            # Set the precision for decimal calculations
+            # inside this block
+            ctx.prec = precision
+
+            yield calculate_something()
+            yield calculate_something()
+
+Decimal contexts are using a TLS to store the state, but because TLS is
+not aware of generators, the state will leak.  The above code will
+not work correctly, if a user iterates over the ``calculate()``
+generator with different precision in parallel.
+
+Inability to use TLS for asynchronous code has lead to proliferation
+of ad-hoc solutions, limited to be supported only by code that was
+explicitly enabled to work with them.
+
+The current status quo is that any library that uses a TLS, will
+likely not work as expected in asynchronous code (see [3]_ as an
+example.)
+
+Some languages that have coroutines or generators recommend to manually
+pass around a Context object, see [1]_ describing the pattern for Go.
+This approach, however, has limited use for Python, where we have
+a huge ecosystem that was built to work with a TLS-like context.
+Moreover, passing the context explicitly does not work at all for
+libraries like ``decimal`` or ``numpy``, which use operator
+overloading.
+
+.NET runtime, which has support for async/await, has a unified solution
+of this problem, called ``ExecutionContext`` (see [2]_).  On the
+surface, working with it is very similar to working with a TLS,
+but the former explicitly supports asynchronous code.
+
+
+Goals
+=====
+
+An acceptable solution for Python should meet the following
+requirements:
+
+ * Transparent support for code executing in threads, coroutines,
+   and generators with an easy to use API.
+
+ * No negative impact the performance of the existing code or the
+   code that will be using the new mechanism.
+
+ * Fast C API for packages like ``decimal`` and ``numpy``.
+
+ * The cost of accessing the state should be similar to that of
+   accessing TLS.
+
+ * Should work for compilers like Cython.
+
+ * Should be JIT-friendly.
+
+
+Specification
+=============
+
+
+
+
+References
+==========
+
+.. [1] https://blog.golang.org/context
+
+.. [2] https://msdn.microsoft.com/en-us/library/system.threading.executioncontext.aspx
+
+.. [3] https://github.com/numpy/numpy/issues/9444
