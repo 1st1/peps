@@ -18,7 +18,7 @@ This PEP proposes a new mechanism to manage execution state--the
 logical environment in which a function, a thread, a generator,
 or a coroutine executes in.
 
-Some examples of where having a reliable state storage is required:
+A few examples of where having a reliable state storage is required:
 
  * Decimal contexts and ``numpy.errstate``;
 
@@ -54,40 +54,43 @@ the following generator::
             yield calculate_something()
             yield calculate_something_else()
 
-Decimal contexts are using a TLS to store the state, but because TLS is
-not aware of generators, the state will leak.  The above code will
+Decimal context is using a TLS to store the state, and because TLS is
+not aware of generators, the state can leak.  The above code will
 not work correctly, if a user iterates over the ``calculate()``
 generator with different precision in parallel::
 
     g1 = calculate(100)
     g2 = calculate(50)
 
-    g1_first_val = next(g1)
-    g2_first_val = next(g2)
+    items = zip(g1, g2)
 
-    g1_second_val = next(g1)  # g2 leaked the decimal precision,
-                              # hence g1 will now use 50, instead
-                              # of 100.
+    # items[0] will be a tuple of:
+    #   first value from g1 calculated with 100 precision,
+    #   first value from g2 calculated with 50 precision.
+    #
+    # items[1] will be a tuple of:
+    #   second value from g1 calculated with 50 precision,
+    #   second value from g2 calculated with 50 precision.
 
 Inability to use TLS for asynchronous code has lead to proliferation
 of ad-hoc solutions, limited to be supported only by code that was
 explicitly enabled to work with them.
 
 The current status quo is that any library that uses a TLS, will
-likely not work as expected in asynchronous code (see [3]_ as an
-example.)
+likely not work as expected in asynchronous code or with generators
+(see [3]_ as an example.)
 
-Some languages that have coroutines or generators recommend to manually
-pass around a Context object, see [1]_ describing the pattern for Go.
-This approach, however, has limited use for Python, where we have
-a huge ecosystem that was built to work with a TLS-like context.
-Moreover, passing the context explicitly does not work at all for
-libraries like ``decimal`` or ``numpy``, which use operator
-overloading.
+Some languages that have coroutines or generators recommend to
+manually pass a ``context`` object to every function, see [1]_
+describing the pattern for Go.  This approach, however, has limited
+use for Python, where we have a huge ecosystem that was built to work
+with a TLS-like context.  Moreover, passing the context explicitly
+does not work at all for libraries like ``decimal`` or ``numpy``,
+which use operator overloading.
 
-.NET runtime, which has support for async/await, has a unified solution
-of this problem, called ``ExecutionContext`` (see [2]_).  On the
-surface, working with it is very similar to working with a TLS,
+.NET runtime, which has support for async/await, has a generic
+solution of this problem, called ``ExecutionContext`` (see [2]_).
+On the surface, working with it is very similar to working with a TLS,
 but the former explicitly supports asynchronous code.  The .NET
 solution directly inspired this PEP.
 
@@ -111,7 +114,31 @@ requirements:
 
  * Should work for compilers like Cython.
 
- * Should be JIT-friendly.
+The ultimate goal of this PEP is make it possible to update
+a context manager like the below::
+
+    _local = threading.local()
+
+    @contextmanager
+    def context(x):
+        old_x = _local.x
+        _local.x = x
+        try:
+            yield
+        finally:
+            _local.x = old_x
+
+to a more robust version that can be reliably used in generators
+and async/await code, with a simple transformation::
+
+    @contextmanager
+    def context(x):
+        old_x = get_context_value('x')
+        set_context_value('x', x)
+        try:
+            yield
+        finally:
+            set_context_value('x', old_x)
 
 
 Specification
@@ -137,7 +164,7 @@ On the high-level, the execution context API is defined as follows:
      return it to the caller.
 
    * ``sys.get_execution_context()``: get the EC from the global TLS,
-     i.e. return the current EC for the caller.
+     i.e. return the current EC object for the caller.
 
    * ``sys.set_execution_context(ec)``: set the passed EC object to
      the global TLS.
@@ -151,7 +178,7 @@ On the high-level, the execution context API is defined as follows:
          sys.set_execution_context(new)
 
    * ``sys.get_execution_context_value(key)``: get the current
-     EC and lookup the ``key`` key on it::
+     EC object and lookup the ``key`` key on it::
 
          current = sys.get_execution_context()
          return current.get(key)
