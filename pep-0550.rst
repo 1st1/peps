@@ -24,14 +24,16 @@ Some examples of where having a reliable state storage is required:
 
  * Context managers like ``warnings.catch_warnings``;
 
- * Storing request-related data such as security tokens and request ID
-   in web applications;
+ * Storing request-related data such as security tokens and request
+   data in web applications;
 
  * Profiling, collecting tracing data, and logging in complex and
    large code bases.
 
-The current solution to store state is using a Thread-local Storage
-(TLS), which does not work for generators or coroutines.
+The usual solution for storing state is to use a Thread-local Storage
+(TLS), implemented in the standard library as ``threading.local()``.
+Unfortunately, TLS does not work for isolating state of generators or
+asynchronous code because such code shares a single thread.
 
 
 Rationale
@@ -50,12 +52,22 @@ the following generator::
             ctx.prec = precision
 
             yield calculate_something()
-            yield calculate_something()
+            yield calculate_something_else()
 
 Decimal contexts are using a TLS to store the state, but because TLS is
 not aware of generators, the state will leak.  The above code will
 not work correctly, if a user iterates over the ``calculate()``
-generator with different precision in parallel.
+generator with different precision in parallel::
+
+    g1 = calculate(100)
+    g2 = calculate(50)
+
+    g1_first_val = next(g1)
+    g2_first_val = next(g2)
+
+    g1_second_val = next(g1)  # g2 leaked the decimal precision,
+                              # hence g1 will now use 50, instead
+                              # of 100.
 
 Inability to use TLS for asynchronous code has lead to proliferation
 of ad-hoc solutions, limited to be supported only by code that was
@@ -76,7 +88,8 @@ overloading.
 .NET runtime, which has support for async/await, has a unified solution
 of this problem, called ``ExecutionContext`` (see [2]_).  On the
 surface, working with it is very similar to working with a TLS,
-but the former explicitly supports asynchronous code.
+but the former explicitly supports asynchronous code.  The .NET
+solution directly inspired this PEP.
 
 
 Goals
@@ -88,12 +101,12 @@ requirements:
  * Transparent support for code executing in threads, coroutines,
    and generators with an easy to use API.
 
- * No negative impact the performance of the existing code or the
+ * No negative impact on the performance of the existing code or the
    code that will be using the new mechanism.
 
  * Fast C API for packages like ``decimal`` and ``numpy``.
 
- * The cost of accessing the state should be similar to that of
+ * The cost of accessing the context should be similar to that of
    accessing TLS.
 
  * Should work for compilers like Cython.
@@ -104,7 +117,88 @@ requirements:
 Specification
 =============
 
+This proposal introduces a new object ``sys.ExecutionContext`` (EC)
+along with a Python API and a C API to interact with it.  CPython
+will be modified to correctly maintain execution contexts for
+threads, async/await code, and generators.
 
+On the high-level, the execution context API is defined as follows:
+
+1. A new object called ``sys.ExecutionContext`` (EC).  EC objects
+   are immutable collections of key/value data.
+
+2. EC is a snapshot of a program context at some point.  We store the
+   current EC object in the global TLS (``PyThreadState``
+   for CPython.)
+
+3. A set of APIs to work with EC:
+
+   * ``sys.new_execution_context()``: create a new EC object and
+     return it to the caller.
+
+   * ``sys.get_execution_context()``: get the EC from the global TLS,
+     i.e. return the current EC for the caller.
+
+   * ``sys.set_execution_context(ec)``: set the passed EC object to
+     the global TLS.
+
+   * ``sys.set_execution_context_value(key, value)``: get the current
+     EC for the caller, add the passed key/value to it, set the new
+     EC object.  In pseudo-code::
+
+         current = sys.get_execution_context()
+         new = current.set(key, value)
+         sys.set_execution_context(new)
+
+   * ``sys.get_execution_context_value(key)``: get the current
+     EC and lookup the ``key`` key on it::
+
+         current = sys.get_execution_context()
+         return current.get(key)
+
+An important consequence is that any code that is using the above API,
+is thread-safe by design.  The rest of the PEP is focused on defining
+the semantics for generators and coroutines within the same thread.
+
+First, let's implement a basic context manager encapsulating some
+state using the new APIs.  We will use it in all code examples in
+this PEP::
+
+    class Foo:
+        def __init__(self, foo):
+            self.foo = foo
+
+        def __enter__(self):
+            self.old_foo = sys.get_execution_context_value('foo')
+            sys.set_execution_context_value('foo', self.foo)
+
+        def __exit__(self, *exc):
+            sys.set_execution_context_value('foo', self.old_foo)
+
+    def get_foo():
+        return sys.get_execution_context_value('foo')
+
+
+Regular Code
+------------
+
+Regular code will just work with the already defined EC semantics::
+
+    with Foo('spam'):
+        assert get_foo() == 'spam'
+
+        with Foo('ham'):
+            assert get_foo() == 'ham'
+
+        assert get_foo() == 'spam'
+
+
+Generators
+----------
+
+
+Coroutines
+----------
 
 
 References
