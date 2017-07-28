@@ -20,15 +20,13 @@ or a coroutine executes in.
 
 A few examples of where having a reliable state storage is required:
 
- * Decimal contexts and ``numpy.errstate``;
-
- * Context managers like ``warnings.catch_warnings``;
+ * Context managers like decimal contexts,``numpy.errstate``,
+   and ``warnings.catch_warnings``;
 
  * Storing request-related data such as security tokens and request
    data in web applications;
 
- * Profiling, collecting tracing data, and logging in complex and
-   large code bases.
+ * Profiling, tracing, and logging in complex and large code bases.
 
 The usual solution for storing state is to use a Thread-local Storage
 (TLS), implemented in the standard library as ``threading.local()``.
@@ -62,7 +60,7 @@ generator with different precision in parallel::
     g1 = calculate(100)
     g2 = calculate(50)
 
-    items = zip(g1, g2)
+    items = list(zip(g1, g2))
 
     # items[0] will be a tuple of:
     #   first value from g1 calculated with 100 precision,
@@ -72,13 +70,24 @@ generator with different precision in parallel::
     #   second value from g1 calculated with 50 precision,
     #   second value from g2 calculated with 50 precision.
 
+Another terrifying example is using ``warnings.catch_warnings``
+in a coroutine::
+
+    async def coro():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            await something()
+
+    # Awaiting ``coro()`` will randomly silence warnings in
+    # unrelated async code executing cooperatively.
+
 Inability to use TLS for asynchronous code has lead to proliferation
 of ad-hoc solutions, limited to be supported only by code that was
 explicitly enabled to work with them.
 
-The current status quo is that any library that uses a TLS, will
-likely not work as expected in asynchronous code or with generators
-(see [3]_ as an example.)
+The current status quo is that any library, including the standard
+library, that uses a TLS, will likely not work as expected in
+asynchronous code or with generators (see [3]_ as an example.)
 
 Some languages that have coroutines or generators recommend to
 manually pass a ``context`` object to every function, see [1]_
@@ -92,7 +101,7 @@ which use operator overloading.
 solution of this problem, called ``ExecutionContext`` (see [2]_).
 On the surface, working with it is very similar to working with a TLS,
 but the former explicitly supports asynchronous code.  The .NET
-solution directly inspired this PEP.
+solution directly inspired parts of PEP.
 
 
 Goals
@@ -104,7 +113,7 @@ requirements:
  * Transparent support for code executing in threads, coroutines,
    and generators with an easy to use API.
 
- * No negative impact on the performance of the existing code or the
+ * Negligible impact on the performance of the existing code or the
    code that will be using the new mechanism.
 
  * Fast C API for packages like ``decimal`` and ``numpy``.
@@ -133,12 +142,24 @@ and async/await code, with a simple transformation::
 
     @contextmanager
     def context(x):
-        old_x = get_context_value('x')
-        set_context_value('x', x)
+        old_x = get_execution_context_value('x')
+        set_execution_context_value('x', x)
         try:
             yield
         finally:
-            set_context_value('x', old_x)
+            set_execution_context_value('x', old_x)
+
+Keep in mind, that although the PEP features many new APIs and
+discusses a lot of implementation details, there will be only two
+functions that 99.9% of Python users will ever need to use:
+
+ * ``set_execution_context_value(key, value)``,
+ * ``get_execution_context_value(key)``.
+
+In short, the goal of the PEP is to provide a more reliable
+alternative to ``threading.local()``.  Explicit is still better than
+implicit, hence the new APIs should only be used when passing the
+state explicitly is not possible.
 
 
 Specification
@@ -151,45 +172,39 @@ threads, async/await code, and generators.
 
 On the high-level, the execution context API is defined as follows:
 
-1. A new object called ``sys.ExecutionContext`` (EC).  EC objects
-   are immutable collections of key/value data.
+1. A new dict-like object called ``sys.ExecutionContext`` (EC).
 
-2. EC is a snapshot of a program context at some point.  We store the
-   current EC object in the global TLS (``PyThreadState``
-   for CPython.)
+2. EC is a snapshot of a program context at some point.  We have a
+   pointer to the current EC object in the global TLS
+   (``PyThreadState`` for CPython.)
 
 3. A set of APIs to work with EC:
 
-   * ``sys.new_execution_context()``: create a new EC object and
-     return it to the caller.
+   * ``sys.get_execution_context()``: return a shallow copy of
+     the current EC object in the global TLS.
 
-   * ``sys.get_execution_context()``: get the EC from the global TLS,
-     i.e. return the current EC object for the caller.
-
-   * ``sys.set_execution_context(ec)``: set the passed EC object to
-     the global TLS.
+   * ``sys.set_execution_context(ec)``: make a shallow copy the passed
+     EC object and to set it to the global TLS.
 
    * ``sys.set_execution_context_value(key, value)``: get the current
-     EC for the caller, add the passed key/value to it, set the new
-     EC object.  In pseudo-code::
-
-         current = sys.get_execution_context()
-         new = current.set(key, value)
-         sys.set_execution_context(new)
+     EC and add the passed key/value to it.  If the ``value`` is
+     ``None``, the ``key`` will be deleted from the EC object.
 
    * ``sys.get_execution_context_value(key)``: get the current
-     EC object and lookup the ``key`` key on it::
+     EC object and lookup the ``key`` key on it.  Return ``None``
+     if no key was found.
 
-         current = sys.get_execution_context()
-         return current.get(key)
+   Note, that some important implementation details and optimizations
+   are omitted here, and will be covered in later sections of the PEP.
 
 An important consequence is that any code that is using the above API,
-is thread-safe by design.  The rest of the PEP is focused on defining
-the semantics for generators and coroutines within the same thread.
+is thread-safe by design.  The rest of this section is focused on
+defining the semantics for generators and coroutines within the same
+thread.
 
-First, let's implement a basic context manager encapsulating some
-state using the new APIs.  We will use it in all code examples in
-this PEP::
+Before diving into the specification details, let's implement a basic
+context manager encapsulating some state using the new APIs.
+We will use it in all code examples in this section::
 
     class Foo:
         def __init__(self, foo):
@@ -209,7 +224,7 @@ this PEP::
 Regular Code
 ------------
 
-Regular code will just work with the already defined EC semantics::
+Regular code will *just* work with the already defined EC semantics::
 
     with Foo('spam'):
         assert get_foo() == 'spam'
