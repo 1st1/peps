@@ -55,7 +55,7 @@ the following generator::
 Decimal context is using a TLS to store the state, and because TLS is
 not aware of generators, the state can leak.  The above code will
 not work correctly, if a user iterates over the ``calculate()``
-generator with different precision in parallel::
+generator with different precisions in parallel::
 
     g1 = calculate(100)
     g2 = calculate(50)
@@ -70,8 +70,7 @@ generator with different precision in parallel::
     #   second value from g1 calculated with 50 precision,
     #   second value from g2 calculated with 50 precision.
 
-Another terrifying example is using ``warnings.catch_warnings``
-in a coroutine::
+Another example is using ``warnings.catch_warnings`` in a coroutine::
 
     async def coro():
         with warnings.catch_warnings():
@@ -79,11 +78,29 @@ in a coroutine::
             await something()
 
     # Awaiting ``coro()`` will randomly silence warnings in
-    # unrelated async code executing cooperatively.
+    # unrelated code, executing cooperatively.
 
-Inability to use TLS for asynchronous code has lead to proliferation
-of ad-hoc solutions, limited to be supported only by code that was
-explicitly enabled to work with them.
+And in web applications it's a common need to have access to the
+current request object, or security context, or, simply, the request
+URL for submitting performance tracing data::
+
+    async def handle_http_request(request):
+        context.current_http_request = request
+
+        await ...
+        # Invoke your framework code, render data,
+        # make DB queries, etc.
+
+    # This isn't currently possible to do reliably in asyncio
+    # out of the box.  Many frameworks define their own
+    # mechanisms incompatible with each other.
+
+These examples are just a few out of many, where a reliable way to
+store context data is absolutely needed.
+
+The inability to use TLS for asynchronous code has lead to
+proliferation of ad-hoc solutions, limited to be supported only by
+code that was explicitly enabled to work with them.
 
 The current status quo is that any library, including the standard
 library, that uses a TLS, will likely not work as expected in
@@ -156,10 +173,10 @@ functions that 99.9% of Python users will ever need to use:
  * ``set_execution_context_value(key, value)``,
  * ``get_execution_context_value(key)``.
 
-In short, the goal of the PEP is to provide a more reliable
+To conclude, the goal of the PEP is to provide a more reliable
 alternative to ``threading.local()``.  Explicit is still better than
-implicit, hence the new APIs should only be used when passing the
-state explicitly is not possible.
+implicit, hence the new APIs should only be used when there is no
+option to pass the state explicitly.
 
 
 Specification
