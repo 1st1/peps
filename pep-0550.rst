@@ -1,5 +1,5 @@
 PEP: 550
-Title: Execution Contexts
+Title: Execution Context
 Version: $Revision$
 Last-Modified: $Date$
 Author: Yury Selivanov <yury@magic.io>
@@ -20,13 +20,13 @@ or a coroutine executes in.
 
 A few examples of where having a reliable state storage is required:
 
- * Context managers like decimal contexts,``numpy.errstate``,
-   and ``warnings.catch_warnings``;
+* Context managers like decimal contexts, ``numpy.errstate``,
+  and ``warnings.catch_warnings``;
 
- * Storing request-related data such as security tokens and request
-   data in web applications;
+* Storing request-related data such as security tokens and request
+  data in web applications;
 
- * Profiling, tracing, and logging in complex and large code bases.
+* Profiling, tracing, and logging in complex and large code bases.
 
 The usual solution for storing state is to use a Thread-local Storage
 (TLS), implemented in the standard library as ``threading.local()``.
@@ -70,30 +70,25 @@ generator with different precisions in parallel::
     #   second value from g1 calculated with 50 precision,
     #   second value from g2 calculated with 50 precision.
 
-Another example is using ``warnings.catch_warnings`` in a coroutine::
+An even scarier example would be using decimals to represent money
+in an async/await application: decimal calculations can suddenly
+lose precision in the middle of processing a request.  Currently,
+bugs like this are extremely hard to trace and fix.
 
-    async def coro():
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            await something()
-
-    # Awaiting ``coro()`` will randomly silence warnings in
-    # unrelated code, executing cooperatively.
-
-And in web applications it's a common need to have access to the
+Another common need for web applications is to have access to the
 current request object, or security context, or, simply, the request
-URL for submitting performance tracing data::
+URL for logging or submitting performance tracing data::
 
     async def handle_http_request(request):
         context.current_http_request = request
 
         await ...
-        # Invoke your framework code, render data,
-        # make DB queries, etc.
+        # Invoke your framework code, render templates,
+        # make DB queries, etc, and use the global
+        # 'current_http_request' in that code.
 
-    # This isn't currently possible to do reliably in asyncio
-    # out of the box.  Many frameworks define their own
-    # mechanisms incompatible with each other.
+        # This isn't currently possible to do reliably
+        # in asyncio out of the box.
 
 These examples are just a few out of many, where a reliable way to
 store context data is absolutely needed.
@@ -102,9 +97,9 @@ The inability to use TLS for asynchronous code has lead to
 proliferation of ad-hoc solutions, limited to be supported only by
 code that was explicitly enabled to work with them.
 
-The current status quo is that any library, including the standard
+Current status quo is that any library, including the standard
 library, that uses a TLS, will likely not work as expected in
-asynchronous code or with generators (see [3]_ as an example.)
+asynchronous code or with generators (see [3]_ as an example issue.)
 
 Some languages that have coroutines or generators recommend to
 manually pass a ``context`` object to every function, see [1]_
@@ -117,37 +112,39 @@ which use operator overloading.
 .NET runtime, which has support for async/await, has a generic
 solution of this problem, called ``ExecutionContext`` (see [2]_).
 On the surface, working with it is very similar to working with a TLS,
-but the former explicitly supports asynchronous code.  The .NET
-solution directly inspired parts of PEP.
+but the former explicitly supports asynchronous code.
 
 
 Goals
 =====
 
+The goal of the PEP is to provide a more reliable alternative to
+``threading.local()``, that is explicitly designed to work with
+Python execution model, equally supporting threads, generators, and
+coroutines.
+
 An acceptable solution for Python should meet the following
 requirements:
 
- * Transparent support for code executing in threads, coroutines,
-   and generators with an easy to use API.
+* Transparent support for code executing in threads, coroutines,
+  and generators with an easy to use API.
 
- * Negligible impact on the performance of the existing code or the
-   code that will be using the new mechanism.
+* Negligible impact on the performance of the existing code or the
+  code that will be using the new mechanism.
 
- * Fast C API for packages like ``decimal`` and ``numpy``.
+* Fast C API for packages like ``decimal`` and ``numpy``.
 
- * The cost of accessing the context should be similar to that of
-   accessing TLS.
+Explicit is still better than implicit, hence the new APIs should only
+be used when there is no option to pass the state explicitly.
 
- * Should work for compilers like Cython.
-
-The ultimate goal of this PEP is make it possible to update
-a context manager like the below::
+With this PEP implemented, it should be possible to update a context
+manager like the below::
 
     _local = threading.local()
 
     @contextmanager
     def context(x):
-        old_x = _local.x
+        old_x = getattr(_local, 'x', None)
         _local.x = x
         try:
             yield
@@ -159,105 +156,358 @@ and async/await code, with a simple transformation::
 
     @contextmanager
     def context(x):
-        old_x = get_execution_context_value('x')
-        set_execution_context_value('x', x)
+        old_x = get_execution_context_item('x')
+        set_execution_context_item('x', x)
         try:
             yield
         finally:
-            set_execution_context_value('x', old_x)
-
-Keep in mind, that although the PEP features many new APIs and
-discusses a lot of implementation details, there will be only two
-functions that 99.9% of Python users will ever need to use:
-
- * ``set_execution_context_value(key, value)``,
- * ``get_execution_context_value(key)``.
-
-To conclude, the goal of the PEP is to provide a more reliable
-alternative to ``threading.local()``.  Explicit is still better than
-implicit, hence the new APIs should only be used when there is no
-option to pass the state explicitly.
+            set_execution_context_item('x', old_x)
 
 
 Specification
 =============
 
-This proposal introduces a new object ``sys.ExecutionContext`` (EC)
-along with a Python API and a C API to interact with it.  CPython
-will be modified to correctly maintain execution contexts for
-threads, async/await code, and generators.
+This proposal introduces a new concept called Execution Context (EC),
+along with a set of Python APIs and C APIs to interact with it.
 
-On the high-level, the execution context API is defined as follows:
+EC is implemented using an immutable mapping.  Every modification
+of the mapping produces a new copy of it.  To illustrate what it
+means let's look at how we work with tuples in Python::
 
-1. A new dict-like object called ``sys.ExecutionContext`` (EC).
+    a0 = ()
+    a1 = a0 + (1,)
+    a2 = a1 + (2,)
 
-2. EC is a snapshot of a program context at some point.  We have a
-   pointer to the current EC object in the global TLS
-   (``PyThreadState`` for CPython.)
+    # a0 is an empty tuple
+    # a1 is (1,)
+    # a2 is (1, 2)
 
-3. A set of APIs to work with EC:
+Manipulating an EC object is similar::
 
-   * ``sys.get_execution_context()``: return a shallow copy of
-     the current EC object in the global TLS.
+    a0 = ExecutionContext()
+    a1 = a0.set('foo', 'bar')
+    a2 = a1.set('spam', 'ham')
 
-   * ``sys.set_execution_context(ec)``: make a shallow copy the passed
-     EC object and to set it to the global TLS.
+    # a0 is an empty mapping
+    # a1 is {'foo': 'bar'}
+    # a2 is {'foo': 'bar', 'spam': 'ham'}
 
-   * ``sys.set_execution_context_value(key, value)``: get the current
-     EC and add the passed key/value to it.  If the ``value`` is
-     ``None``, the ``key`` will be deleted from the EC object.
+In CPython, every thread that can execute Python code has a
+corresponding ``PyThreadState`` object.  It encapsulates important
+runtime information like a pointer to the current frame, and is
+being used by the ceval loop extensively.  We add a new field to
+``PyThreadState``, called ``exec_context``, which points to the
+current EC object.
 
-   * ``sys.get_execution_context_value(key)``: get the current
-     EC object and lookup the ``key`` key on it.  Return ``None``
-     if no key was found.
+We also introduce a set of APIs to work with Execution Context:
 
-   Note, that some important implementation details and optimizations
-   are omitted here, and will be covered in later sections of the PEP.
+1. ``sys.get_execution_context()``: return the current EC object
+   from the current thread state.
 
-An important consequence is that any code that is using the above API,
-is thread-safe by design.  The rest of this section is focused on
-defining the semantics for generators and coroutines within the same
-thread.
+2. ``sys.set_execution_context(ec)``: set the passed EC object
+   as the current one for the executing thread.
 
-Before diving into the specification details, let's implement a basic
-context manager encapsulating some state using the new APIs.
-We will use it in all code examples in this section::
+3. ``sys.get_execution_context_item(key, default=None)``: lookup
+   ``key`` in the EC of the executing thread.  If not found,
+   return ``default``.
 
-    class Foo:
-        def __init__(self, foo):
-            self.foo = foo
+4. ``sys.set_execution_context_item(key, value)``: get the
+   current EC of the executing thread.  Add a ``key``/``value``
+   item to it, which will produce a new EC' object.  Set the
+   new object as the current one for the executing thread.
+   If ``value`` is ``None`` the item will be removed (the rationale
+   for this is explained later in the PEP).
+   In pseudo-code::
 
-        def __enter__(self):
-            self.old_foo = sys.get_execution_context_value('foo')
-            sys.set_execution_context_value('foo', self.foo)
+      tstate = PyThreadState_GET()
+      ec = tstate.exec_context
+      if value is None:
+          ec2 = ec.pop(key)
+      else:
+          ec2 = ec.set(key, value)
+      tstate.exec_context = ec2
 
-        def __exit__(self, *exc):
-            sys.set_execution_context_value('foo', self.old_foo)
+Note, that some important implementation details and optimizations
+are omitted here, and will be covered in later sections of the PEP.
 
-    def get_foo():
-        return sys.get_execution_context_value('foo')
+Now let's see how Execution Contexts work with regular multi-threaded
+code, generators, and coroutines.
 
 
-Regular Code
-------------
+Regular & Multithreaded Code
+----------------------------
 
-Regular code will *just* work with the already defined EC semantics::
+For regular Python code, EC behaves just like a thread-local.  Any
+modification of the EC object produces a new one, which is immediately
+set as the current one for the thread state.
 
-    with Foo('spam'):
-        assert get_foo() == 'spam'
+.. figure:: pep-0550/functions.gif
+   :align: center
+   :width: 80%
 
-        with Foo('ham'):
-            assert get_foo() == 'ham'
+   Figure 1.  Execution Context flow in a thread.
 
-        assert get_foo() == 'spam'
+As Figure 1 illustrates, if a function calls
+``set_execution_context_item()``, the modification of the execution
+context will be visible to all subsequent calls and to the caller::
+
+    def set_foo():
+        set_execution_context_item('foo', 'spam')
+
+    set_execution_context_item('foo', 'bar')
+    print(get_execution_context_item('foo'))
+
+    set_foo()
+    print(get_execution_context_item('foo'))
+
+    # will print:
+    #   bar
+    #   spam
+
+
+Coroutines
+----------
+
+Python :pep:`492` coroutines are used to implement cooperative
+multitasking.  For a Python end-user they are similar to threads,
+especially when it comes to sharing resources or modifying
+the global state.
+
+An event loop is needed to schedule coroutines.  Coroutines that
+are explicitly scheduled by the user are usually called Tasks.
+When a coroutine is scheduled, it can schedule other coroutines using
+an ``await`` expression.  In async/await world, awaiting a coroutine
+can be viewed as a different calling convention: Tasks are similar to
+threads, and awaiting on coroutines within a Task is similar to
+calling functions within a thread.
+
+By drawing a parallel between regular multithreaded code and
+async/await, it becomes apparent that any modification of the
+execution context within one Task should be visible to all coroutines
+scheduled within it.  Any execution context modifications, however,
+must not be visible to other Tasks executing within the same thread.
+
+To achieve this, a small set of modifications needs to be done
+to the coroutine object implementation:
+
+* When a coroutine object is instantiated, it saves a reference to
+  the current execution context object to its ``cr_execution_context``
+  attribute.
+
+* Coroutine's ``send`` and ``throw`` methods are modified as follows
+  (in pseudo-code)::
+
+    if self.cr_isolated_execution_context:
+        # Save a reference to the current execution context
+        old_ec = tstate.execution_context
+
+        # Set our saved execution context as the current
+        # for the current thread.
+        tstate.execution_context = self.cr_execution_context
+
+        try:
+            # Perform the actual `Coroutine.send()` or
+            # `Coroutine.throw()` call.
+            return self.send(...)
+        finally:
+            # Save a reference to the updated execution_context.
+            # We will need it later, when `.send()` or `.throw()`
+            # are called again.
+            self.ct_execution_context = tstate.execution_context
+
+            # Restore thread's execution context to what it was before
+            # invoking this coroutine.
+            tstate.execution_context = old_ec
+    else:
+        # Perform the actual `Coroutine.send()` or
+        # `Coroutine.throw()` call.
+        return self.send(...)
+
+* ``cr_isolated_execution_context`` is a new attribute on coroutine
+  objects.  Set to ``True`` by default, it makes any execution context
+  modifications performed by coroutine to stay visible only to that
+  coroutine.
+
+  When Python interpreter sees an ``await`` instruction, it flips
+  ``cr_isolated_execution_context`` to ``False`` for the coroutine
+  that is about to be awaited.  This makes any changes to execution
+  context made by nested coroutine calls within a Task to be visible
+  throughout the Task.
+
+  Because the top-level coroutine (Task) cannot be scheduled with
+  ``await`` (in asyncio you need to call ``loop.create_task()`` or
+  ``asyncio.ensure_future()`` to schedule a Task), all execution
+  context modifications are guaranteed to stay within the Task.
+
+Figure 2 below illustrates how execution context mutations work with
+coroutines.
+
+.. figure:: pep-0550/coroutines.gif
+   :align: center
+   :width: 80%
+
+   Figure 2.  Execution Context flow in coroutines.
+
+In the above diagram:
+
+* When "Coroutine 1" is created, it saves a reference to the current
+  execution context "2".
+
+* If it makes any change to the context, it will have its own
+  execution context branch "2.1".
+
+* When it awaits on "Coroutine 2", any subsequent changes it does to
+  the execution context are visible to "Coroutine 1", but not outside
+  of it.
+
+In code::
+
+    async def inner_foo():
+        print('inner_foo:', get_execution_context_item('key'))
+        set_execution_context_item('key', 2)
+
+    async def foo():
+        print('foo:', get_execution_context_item('key'))
+
+        set_execution_context_item('key', 1)
+        await inner_foo()
+
+        print('foo:', get_execution_context_item('key'))
+
+
+    set_execution_context_item('key', 'spam')
+    print('main:', get_execution_context_item('key'))
+
+    asyncio.get_event_loop().run_until_complete(foo())
+
+    print('main:', get_execution_context_item('key'))
+
+which will output::
+
+    main: spam
+    foo: spam
+    inner_foo: 1
+    foo: 2
+    main: spam
+
+Generator-based coroutines (generators decorated with
+``types.coroutine`` or ``asyncio.coroutine``) behave exactly as
+native coroutines with regards to execution context management:
+their ``yield from`` expression is semantically equivalent to
+``await``.
 
 
 Generators
 ----------
 
+Generators in Python, while similar to Coroutines, are used in a
+fundamentally different way.  They are producers of data, and
+they use ``yield`` expression to suspend/resume their execution.
 
-Coroutines
-----------
+A crucial difference between ``await coro`` and ``yield value`` is
+that the former expression guarantees that the ``coro`` will be
+executed to the end, while the latter is producing ``value`` and
+suspending the generator until it gets iterated again.
+
+Generators share 99% of their implementation with coroutines, and
+thus have similar new attributes ``gi_execution_context`` and
+``gi_isolated_execution_context``.  Similar to coroutines, generators
+save a reference to the current execution context when they are
+instantiated.  The have the same implementation of ``.send()`` and
+``.throw()`` methods.
+
+The only difference is that
+``gi_isolated_execution_context`` is always set to ``True``, and
+is never modified by the interpreter.  ``yield from o`` expression in
+regular generators that are not decorated with ``types.coroutine``,
+is semantically equivalent to ``for v in o: yield v``.
+
+.. figure:: pep-0550/generators.gif
+   :align: center
+   :width: 80%
+
+   Figure 3.  Execution Context flow in a generator.
+
+In code::
+
+    def inner_foo():
+        for i in range(3):
+            print('inner_foo:', get_execution_context_item('key'))
+            set_execution_context_item('key', i)
+            yield i
+
+
+    def foo():
+        set_execution_context_item('key', 'spam')
+        print('foo:', get_execution_context_item('key'))
+
+        inner = inner_foo()
+
+        while True:
+            val = next(inner, None)
+            if val is None:
+                break
+            yield val
+            print('foo:', get_execution_context_item('key'))
+
+    set_execution_context_item('key', 'spam')
+    print('main:', get_execution_context_item('key'))
+
+    list(foo())
+
+    print('main:', get_execution_context_item('key'))
+
+which will output::
+
+    main: ham
+    foo: spam
+    inner_foo: spam
+    foo: spam
+    inner_foo: 0
+    foo: spam
+    inner_foo: 1
+    foo: spam
+    main: ham
+
+As wee see, any modification of the execution context in a generator
+is visible only to the generator itself.
+
+
+Greenlet
+--------
+
+Greenlet is an alternative implementation of cooperative
+scheduling for Python.  Although greenlet package is not part of
+CPython, popular frameworks like gevent rely on it, and it is
+important that greenlet can be modified to support execution
+contexts.
+
+In a nutshell, greenlet design is very similar to design of
+generators.  The main difference is that for generators, the stack
+is managed by the Python interpreter.  Greenlet works outside of the
+Python interpreter, and manually saves some ``PyThreadState``
+fields and pushes/pops the C-stack.  Since Execution Context is
+implemented on top of ``PyThreadState``, it's easy to add
+transparent support of it to greenlet.
+
+
+
+HAMT
+====
+
+O(log\ :sub:`32`\ N)
+
+
+Reference Implementation
+========================
+
+Previous Approaches
+-------------------
+
+1. Use FrameState
+2. Use TState + immutable
+3. Encapsulate dict + cow in one object
+4. Current approach -- dict in one object, cow is in TState
 
 
 References
