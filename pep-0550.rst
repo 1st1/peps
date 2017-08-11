@@ -119,7 +119,7 @@ Goals
 =====
 
 The goal of the PEP is to provide a more reliable alternative to
-``threading.local()``, that is explicitly designed to work with
+``threading.local()``.  It should be explicitly designed to work with
 Python execution model, equally supporting threads, generators, and
 coroutines.
 
@@ -199,32 +199,24 @@ being used by the ceval loop extensively.  We add a new field to
 ``PyThreadState``, called ``exec_context``, which points to the
 current EC object.
 
-We also introduce a set of APIs to work with Execution Context:
+We also introduce a set of APIs to work with Execution Context.
+In this section we will only cover two functions that are needed to
+explain how Execution Context works.  See the full list of new APIs
+in the `New APIs`_ section.
 
-1. ``sys.get_execution_context()``: return the current EC object
-   from the current thread state.
+* ``sys.get_execution_context_item(key, default=None)``: lookup
+  ``key`` in the EC of the executing thread.  If not found,
+  return ``default``.
 
-2. ``sys.set_execution_context(ec)``: set the passed EC object
-   as the current one for the executing thread.
-
-3. ``sys.get_execution_context_item(key, default=None)``: lookup
-   ``key`` in the EC of the executing thread.  If not found,
-   return ``default``.
-
-4. ``sys.set_execution_context_item(key, value)``: get the
-   current EC of the executing thread.  Add a ``key``/``value``
-   item to it, which will produce a new EC' object.  Set the
-   new object as the current one for the executing thread.
-   If ``value`` is ``None`` the item will be removed (the rationale
-   for this is explained later in the PEP).
-   In pseudo-code::
+* ``sys.set_execution_context_item(key, value)``: get the
+  current EC of the executing thread.  Add a ``key``/``value``
+  item to it, which will produce a new EC' object.  Set the
+  new object as the current one for the executing thread.
+  In pseudo-code::
 
       tstate = PyThreadState_GET()
       ec = tstate.exec_context
-      if value is None:
-          ec2 = ec.pop(key)
-      else:
-          ec2 = ec.set(key, value)
+      ec2 = ec.set(key, value)
       tstate.exec_context = ec2
 
 Note, that some important implementation details and optimizations
@@ -294,8 +286,8 @@ to the coroutine object implementation:
   the current execution context object to its ``cr_execution_context``
   attribute.
 
-* Coroutine's ``send`` and ``throw`` methods are modified as follows
-  (in pseudo-code)::
+* Coroutine's ``.send()`` and ``.throw()`` methods are modified as
+  follows (in pseudo-code)::
 
     if self.cr_isolated_execution_context:
         # Save a reference to the current execution context
@@ -428,6 +420,20 @@ is semantically equivalent to ``for v in o: yield v``.
 
    Figure 3.  Execution Context flow in a generator.
 
+In the above diagram:
+
+* When "Generator 1" is created, it saves a reference to the current
+  execution context "2".
+
+* If it makes any change to the context, it will have its own
+  execution context branch "2.1".
+
+* When it awaits on "Generator 2" is created, it saves a reference to
+  the current execution context for it -- "2.1".
+
+* Any subsequent execution context updated in "Generator 2" will only
+  be visible to "Generator 2".  Ditto for "Generator 1".
+
 In code::
 
     def inner_foo():
@@ -472,9 +478,25 @@ which will output::
 As wee see, any modification of the execution context in a generator
 is visible only to the generator itself.
 
+There is one use-case where it is desired for generators to affect
+the surrounding execution context: ``contextlib.contextmanager``
+decorator.  To make the following work::
 
-Greenlet
---------
+    @contextmanager
+    def context(x):
+        old_x = get_execution_context_item('x')
+        set_execution_context_item('x', x)
+        try:
+            yield
+        finally:
+            set_execution_context_item('x', old_x)
+
+we modified ``contextmanager`` to flip
+``gi_isolated_execution_context`` flag to ``False`` on its generator.
+
+
+Greenlets
+---------
 
 Greenlet is an alternative implementation of cooperative
 scheduling for Python.  Although greenlet package is not part of
@@ -489,6 +511,163 @@ Python interpreter, and manually saves some ``PyThreadState``
 fields and pushes/pops the C-stack.  Since Execution Context is
 implemented on top of ``PyThreadState``, it's easy to add
 transparent support of it to greenlet.
+
+
+New APIs
+========
+
+Even though the PEP adds a number of new APIs, please keep in mind,
+that most Python users will likely ever use only two of them:
+``sys.get_execution_context_item()`` and
+``sys.set_execution_context_item()``.
+
+
+Python
+------
+
+1. ``sys.get_execution_context_item(key, default=None)``: lookup
+   ``key`` for the current Execution Context.  If not found,
+   return ``default``.
+
+2. ``sys.set_execution_context_item(key, value)``: set
+   ``key``/``value`` item for the current Execution Context.
+   If ``value`` is ``None``, the item will be removed.
+
+3. ``sys.get_execution_context()``: return the current Execution
+   Context object: ``sys.ExecutionContext``.
+
+4. ``sys.set_execution_context(ec)``: set the passed
+   ``sys.ExecutionContext`` instance as a current one for the current
+   thread.
+
+5. ``sys.ExecutionContext`` object.
+
+   Implementation detail: ``sys.ExecutionContext`` wraps a low-level
+   ``PyExecContextData`` object.  ``sys.ExecutionContext`` has a
+   mutable mapping API, abstracting away the real immutable
+   ``PyExecContextData``.
+
+   * ``ExecutionContext()``: construct a new, empty, execution
+     context.
+
+   * ``ec.run(func, *args)`` method: run ``func(*args)`` in the
+     ``ec`` execution context.
+
+   * ``ec[key]``: lookup ``key`` in ``ec`` context.
+
+   * ``ec[key] = value``: assign ``key``/``value`` item to the ``ec``.
+
+   * ``ec.get()``, ``ec.items()``, ``ec.values()``, ``ec.keys()``, and
+     ``ec.copy()`` are similar to that of ``dict`` object.
+
+
+C API
+-----
+
+C API is different from the Python one because it operates directly
+on the low-level immutable ``PyExecContextData`` object.
+
+1. New ``PyThreadState->exec_context`` field, pointing to a
+   ``PyExecContextData`` object.
+
+2. ``PyThreadState_SetExecContextItem`` and
+   ``PyThreadState_GetExecContextItem`` similar to
+   ``sys.set_execution_context_item()`` and
+   ``sys.get_execution_context_item()``.
+
+3. ``PyThreadState_GetExecContext``: similar to
+   ``sys.get_execution_context()``.  Always returns an
+   ``PyExecContextData`` object.  If ``PyThreadState->exec_context``
+   is ``NULL`` an new and empty one will be created and assigned
+   to ``PyThreadState->exec_context``.
+
+4. ``PyThreadState_SetExecContext``: similar to
+   ``sys.set_execution_context()``.
+
+5. ``PyExecContext_New``: create a new empty ``PyExecContextData``
+   object.
+
+6. ``PyExecContext_SetItem`` and ``PyExecContext_GetItem``.
+
+The exact layout ``PyExecContextData`` is private, which allows
+to switch it to a different implementation later.  More on that
+in the `Implementation Details`_ section.
+
+
+Implementation Details
+======================
+
+The new ``PyExecContextData`` object is wrapping a ``dict`` object.
+Any modification requires creating a shallow copy of the dict.
+
+While working on the reference implementation of the PEP, we were
+able to optimize ``dict.copy()`` operation **5.5x**, see [4]_ for
+details.
+
+
+Modifications in Standard Library
+=================================
+
+1. ``contextlib.contextmanager`` was updated to flip the new
+   ``gi_isolated_execution_context`` attribute on the generator.
+
+2. ``asyncio.events.Handle`` object now captures the current
+   execution context when it is created, and uses the saved
+   execution context to run the callback (with
+   ``ExecutionContext.run()`` method.)  This makes
+   ``loop.call_soon()`` to run callbacks in the execution context
+   they were scheduled.
+
+   No modifications in ``asyncio.Task`` or ``asyncio.Future`` were
+   necessary.
+
+Some standard library modules like ``warnings`` and ``decimal``
+can be updated to use new execution contexts.  This will be considered
+in separate issues if the PEP is accepted.
+
+
+Design Considerations
+=====================
+
+Why set_execution_context_item removes item when value is None?
+---------------------------------------------------------------
+
+Consider a context manager::
+
+    @contextmanager
+    def context(x):
+        old_x = get_execution_context_item('x')
+        set_execution_context_item('x', x)
+        try:
+            yield
+        finally:
+            set_execution_context_item('x', old_x)
+
+With ``set_execution_context_item(key, None)`` call removing the
+``key``, the user doesn't need to write additional code to remove
+the ``key`` if it wasn't in the execution context already.
+
+An alternative design with ``del_execution_context_item()`` method
+would look like the following::
+
+    @contextmanager
+    def context(x):
+        not_there = object()
+        old_x = get_execution_context_item('x', not_there)
+        set_execution_context_item('x', x)
+        try:
+            yield
+        finally:
+            if old_x is not_there:
+                del_execution_context_item('x')
+            else:
+                set_execution_context_item('x', old_x)
+
+
+Can ``PyThreadState_GetDict()`` API be enhanced to work as EC?
+--------------------------------------------------------------
+
+No
 
 
 
@@ -510,6 +689,7 @@ Previous Approaches
 4. Current approach -- dict in one object, cow is in TState
 
 
+
 References
 ==========
 
@@ -518,3 +698,23 @@ References
 .. [2] https://msdn.microsoft.com/en-us/library/system.threading.executioncontext.aspx
 
 .. [3] https://github.com/numpy/numpy/issues/9444
+
+.. [4] http://bugs.python.org/issue31179
+
+.. [5] https://gist.github.com/1st1/9004813d5576c96529527d44c5457dcd
+
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
