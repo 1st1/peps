@@ -988,7 +988,7 @@ References
 
 .. [6] http://blog.higher-order.net/2010/08/16/assoc-and-clojures-persistenthashmap-part-ii.html
 
-.. [7] TODO: link to hamt impl
+.. [7] https://github.com/1st1/cpython/tree/hamt
 
 .. [8] https://michael.steindorfer.name/publications/oopsla15.pdf
 
@@ -996,7 +996,7 @@ References
 
 .. [10] https://gist.github.com/1st1/dbe27f2e14c30cce6f0b5fddfc8c437e
 
-.. [11] TODO: ref implementation
+.. [11] https://github.com/1st1/cpython/tree/pep550
 
 .. [12] https://www.python.org/dev/peps/pep-0492/#async-await
 
