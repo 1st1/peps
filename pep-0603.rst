@@ -133,8 +133,8 @@ a key::
 
   m3 = m.delete('spam')  # will throw a KeyError('spam')
 
-frozenmap.update(mapping, \*\*kw)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+frozenmap.update(mapping=None, \*\*kw)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The method allows to produce a copy of the ``frozenmap`` with
 multiple key/values added.  The signature of the method matches
@@ -153,12 +153,14 @@ the signature of the ``frozenmap`` constructor::
 frozenmap.mutate()
 ^^^^^^^^^^^^^^^^^^
 
+**TODO** rewrite this to incorporate mut.freeze() & with block.
+
 The method allows to apply multiple mutation operations in an
 efficient way.  The ``mutate()`` method returns a new object
 ``collections.MapMutation`` which implements the full
 ``collections.abc.MutableMapping`` API.
 
-In
+E.g.::
 
   m = frozenmap(foo=1, spam='ham')
 
