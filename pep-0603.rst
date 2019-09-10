@@ -77,7 +77,8 @@ Construction
 * ``frozenmap(collection)`` creates a mapping from the passed
   ``collection`` object, which can be: a ``dict``, another
   ``frozenmap``, an object with ``items()`` method that is expected
-  to return a series of key/value tuples.
+  to return a series of key/value tuples, or an iterable of
+  key/value tuples.
 
 Data Access
 -----------
