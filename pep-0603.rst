@@ -107,11 +107,6 @@ way that they would for a ``dict``::
   assert 'baz' not in m
   assert foo.get('baz', 'missing') == 'missing'
 
-  assert list(m) == ['foo']
-  assert list(m.items()) == [('foo', 'bar')]
-  assert list(m.keys()) == ['foo']
-  assert list(m.values()) == ['bar']
-
   assert m == m
   assert m != frozenmap()
 
@@ -124,19 +119,19 @@ Mutation
 to efficiently produce mutated *copies* of the immutable instance.
 The following produces mutated copies of a ``frozenmap``:
 
-frozenmap.set()
-^^^^^^^^^^^^^^^
+frozenmap.set(key, value)
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The method allows assignment of a value to a key::
 
   m = frozenmap(foo=1)
-  m2 = m.set(bar=100)
+  m2 = m.set('bar', 100)
 
   print(m)   # will print frozenmap({'foo': 1})
   print(m2)  # will print frozenmap({'foo': 1, 'bar': 100})
 
-frozenmap.delete()
-^^^^^^^^^^^^^^^^^^
+frozenmap.delete(key)
+^^^^^^^^^^^^^^^^^^^^^
 
 The method produces a copy of the ``frozenmap`` which does not
 include a deleted key::
@@ -150,8 +145,8 @@ include a deleted key::
 
   m3 = m.delete('spam')  # will throw a KeyError('spam')
 
-frozenmap.update()
-^^^^^^^^^^^^^^^^^^
+frozenmap.update(mapping=None, \*\*kw)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The method produces a copy of the ``frozenmap`` and adds or modifies
 multiple key/values when the copy is created.  The signature of the method
@@ -159,24 +154,25 @@ matches the signature of the ``frozenmap`` constructor::
 
   m = frozenmap(foo=1)
 
-  m2 = m.update(foo=100, y=2)
-  print(m2)  # will print frozenmap({'foo': 100, 'y': 2})
+  m2 = m.update({'spam': 'ham'})
+  print(m2)  # will print frozenmap({'foo': 1, 'spam': 'ham'})
 
-  print(m[foo])   # will print 1
-  print(m2[foo])  # will print 100
-
-  m3 = m.update({'spam': 'ham'})
-  print(m3)  # will print frozenmap({'foo': 1, 'spam': 'ham'})
+  m3 = m.update(foo=100, y=2)
+  print(m3)  # will print frozenmap({'foo': 100, 'y': 2})
 
   print(m)   # will print frozenmap({'foo': 1})
 
 frozenmap.mutate()
 ^^^^^^^^^^^^^^^^^^
 
+**TODO** rewrite this to incorporate mut.freeze() & with block.
+
 The method allows application of multiple mutation operations in an
 efficient way.  The ``mutate()`` method returns a new object
 ``collections.MapMutation`` which implements the full
-``collections.abc.MutableMapping`` API::
+``collections.abc.MutableMapping`` API.
+
+E.g.::
 
   m = frozenmap(foo=1, spam='ham')
 
@@ -192,6 +188,19 @@ efficient way.  The ``mutate()`` method returns a new object
 
   # Note: It is illegal to mutate `mut` after the `finish` method is called
   mut[42] = 42  # will throw a ValueError
+
+Iteration
+---------
+
+As ``frozenmap`` implements the standard ``collections.abc.Mapping``
+protocol, so all expected methods of iteration are supported::
+
+  assert list(m) == ['foo']
+  assert list(m.items()) == [('foo', 'bar')]
+  assert list(m.keys()) == ['foo']
+  assert list(m.values()) == ['bar']
+
+Iteration, unlike in ``dict``, does not preserve the insertion order.
 
 Hashing
 -------
@@ -276,7 +285,7 @@ Why "frozenmap" and not "frozendict"
 "Dict" has a very specific meaning in Python:
 
 * a dict is a concrete implementation of ``abc.MutableMapping`` with
-  O(1) get and set operations;
+  O(1) get and set operations (``frozenmap`` has O(log N) complexity);
 
 * Python dicts preserve insertion order.
 
