@@ -33,7 +33,8 @@ The proposed ``frozenmap`` type:
 
 * implements the ``collections.abc.Mapping`` protocol,
 * supports pickling, and
-* provides an API for efficient mutation.
+* provides an API for mutation which uses efficient creation and manipulation
+  of a new mutable copy of the immutable instance.
 
 These use cases illustrate why an immutable mapping is desirable:
 
@@ -56,13 +57,11 @@ These use cases illustrate why an immutable mapping is desirable:
 Lastly, CPython [1]_ already contains the main portion of the C code required
 for the ``frozenmap`` implementation.  The C code already exists to
 implement the ``contextvars`` module (see :pep:`567` for more details.)
-
-[TODO: Additional explanation needed here]
-Exposing that code via a public collection type drastically
-increases the number of users of that code.  That helps with
-discovering bugs and improving performance which otherwise would
-be very challenging because most programs use ``contextvars``
-indirectly.
+Exposing this C code via a public collection type drastically
+increases the number of users of the code.  This leads to increased code
+quality by discovering bugs and improving performance which without a
+``frozenset`` collection would be very challenging because most programs use
+the ``contextvars`` module indirectly.
 
 
 Specification
@@ -76,8 +75,8 @@ Construction
 
 ``frozenmap`` implements a ``dict``-like construction API:
 
-* ``frozenmap()`` creates a new empty mapping (TODO: clarify...immutable after the first
-  write of data???);
+* ``frozenmap()`` creates a new empty mapping (which can be populated with
+  data using the ``set`` method.);
 
 * ``frozenmap(**kwargs)`` creates a mapping from ``**kwargs``, e.g.
   ``frozenmap(spam='ham', foo=42)``
@@ -108,7 +107,7 @@ way that they would for a ``dict``::
   assert foo.get('baz', 'missing') == 'missing'
 
   assert m == m
-  assert m != frozenmap()
+  assert m != frozenmap()  # m is not equal to an empty frozenmap
 
   # etc.
 
@@ -200,7 +199,8 @@ protocol, so all expected methods of iteration are supported::
   assert list(m.keys()) == ['foo']
   assert list(m.values()) == ['bar']
 
-Iteration, unlike in ``dict``, does not preserve the insertion order.
+Iteration in ``frozenmap``, unlike in ``dict``, does not preserve the
+insertion order.
 
 Hashing
 -------
@@ -222,8 +222,9 @@ Implementation
 ==============
 
 The proposed ``frozenmap`` immutable type uses a Hash Array Mapped Trie (HAMT)
-data structure. Functional programming languages, like Clojure, use this novel
-data structure to efficiently implement immutable hash tables.
+data structure. Functional programming languages, like Clojure, use this novel,
+yet often implemented, data structure to efficiently implement immutable hash
+tables.
 
 HAMT
 ----
