@@ -32,7 +32,7 @@ Rationale
 
 Python has two immutable collection types: ``tuple`` and
 ``frozenset``.  These types can be used to represent immutable lists
-and sets. However, a way to represent immutable *mappings* does not
+and sets. However, a way to represent immutable *mappings* does not yet
 exist, and this PEP proposes a ``frozenmap`` to implement an
 immutable *mapping*.
 
@@ -47,8 +47,8 @@ These use cases illustrate why an immutable mapping is desirable:
 * Immutable mappings are hashable which allows their use
   as dictionary keys or set elements.
 
-  This hashable property enables functions decorated with
-  ``@functools.lru_cache()`` can accept immutable mappings as
+  This hashable property permits functions decorated with
+  ``@functools.lru_cache()`` to accept immutable mappings as
   arguments. Unlike an immutable mapping, passing a plain ``dict``
   to such a function results in error.
 
@@ -109,7 +109,7 @@ way that they would for a ``dict``::
   assert 'foo' in m
 
   assert 'baz' not in m
-  assert foo.get('baz', 'missing') == 'missing'
+  assert m.get('baz', 'missing') == 'missing'
 
   assert m == m
   assert m != frozenmap()  # m is not equal to an empty frozenmap
@@ -131,7 +131,7 @@ to the use of structural sharing (read [6]_ for more details.)
 frozenmap.including(key, value)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The method creates new ``frozenmap`` copy with a new *key* / *value*
+The method creates a new ``frozenmap`` copy with a new *key* / *value*
 pair::
 
   m = frozenmap(foo=1)
@@ -182,7 +182,7 @@ The method allows efficient copying of a ``frozenmap`` instance with
 multiple modifications applied.  This method is especially useful
 when the ``frozenmap`` in question contains 1000s of key/value pairs
 and there's a need to update many of them in a performance-critical
-section of the code.   Because
+section of the code.
 
 The ``frozenmap.mutating()`` method returns a mutable dict-like
 copy of the ``frozenmap`` object: an instance of
@@ -191,7 +191,7 @@ copy of the ``frozenmap`` object: an instance of
 The ``FrozenMapCopy`` objects:
 
 * are mutable, although any mutations on them do not affect the
-  ``frozenmap`` instances they was created from;
+  ``frozenmap`` instances they were created from;
 
 * can be passed to the ``frozenmap`` constructor; creating a
   frozenmap out of a ``FrozenMapCopy`` object is an O(1)
