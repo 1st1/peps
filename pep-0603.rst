@@ -14,27 +14,33 @@ Post-History:
 Abstract
 ========
 
-This PEP proposes to add a new immutable mapping type called
-``frozenmap`` to the ``collections`` module.
+A *persistent data structure* is defined as a data structure that
+preserves the previous version of the data when the data is modified.
+Such data structures are effectively *immutable*, as operations on
+them do not update the structure in-place, but instead always yield
+a new updated structure (see [0]_ for more details.)
 
-The bulk of ``frozenmap``'s reference implementation is already used in CPython
-to implement the ``contextvars`` module.
+This PEP proposes to add a new fully persistent and immutable mapping
+type called ``frozenmap`` to the ``collections`` module.
+
+The bulk of ``frozenmap``'s reference implementation is already
+used in CPython to implement the ``contextvars`` module.
 
 
 Rationale
 =========
 
 Python has two immutable collection types: ``tuple`` and
-``frozenset``.  These types can be used to represent immutable lists and sets.
-However, a way to represent immutable *mappings* does not exist, and
-this PEP proposes a ``frozenmap`` to implement an immutable *mapping*.
+``frozenset``.  These types can be used to represent immutable lists
+and sets. However, a way to represent immutable *mappings* does not
+exist, and this PEP proposes a ``frozenmap`` to implement an
+immutable *mapping*.
 
 The proposed ``frozenmap`` type:
 
 * implements the ``collections.abc.Mapping`` protocol,
 * supports pickling, and
-* provides an API for mutation which uses efficient creation and manipulation
-  of a new mutable copy of the immutable instance.
+* provides an API for efficient creation of "modified" versions.
 
 These use cases illustrate why an immutable mapping is desirable:
 
@@ -67,27 +73,26 @@ the ``contextvars`` module indirectly.
 Specification
 =============
 
-A new public immutable type ``frozenmap`` is added to the ``collections``
-module.
+A new public immutable type ``frozenmap`` is added to the
+``collections`` module.
 
 Construction
 ------------
 
 ``frozenmap`` implements a ``dict``-like construction API:
 
-* ``frozenmap()`` creates a new empty mapping (which can be populated with
-  data using the ``set`` method.);
+* ``frozenmap()`` creates a new empty immutable mapping;
 
 * ``frozenmap(**kwargs)`` creates a mapping from ``**kwargs``, e.g.
-  ``frozenmap(spam='ham', foo=42)``
+  ``frozenmap(x=10, y=0, z=-1)``
 
 * ``frozenmap(collection)`` creates a mapping from the passed
   ``collection`` object. The passed ``collection`` object can be:
 
   - a ``dict``,
   - another ``frozenmap``,
-  - an object with an ``items()`` method that is expected to return a
-    series of key/value tuples, or
+  - an object with an ``items()`` method that is expected to return
+    a series of key/value tuples, or
   - an iterable of key/value tuples.
 
 Data Access
@@ -109,6 +114,8 @@ way that they would for a ``dict``::
   assert m == m
   assert m != frozenmap()  # m is not equal to an empty frozenmap
 
+  assert len(m) == 1
+
   # etc.
 
 Mutation
@@ -116,77 +123,115 @@ Mutation
 
 ``frozenmap`` instances are immutable. That said, it is possible
 to efficiently produce mutated *copies* of the immutable instance.
-The following produces mutated copies of a ``frozenmap``:
 
-frozenmap.set(key, value)
-^^^^^^^^^^^^^^^^^^^^^^^^^
+The complexity of mutation operations is O(log N) and the resulting
+``frozenmap`` copies often consume very little additional memory due
+to the use of structural sharing (read [6]_ for more details.)
 
-The method allows assignment of a value to a key::
+frozenmap.including(key, value)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The method creates new ``frozenmap`` copy with a new *key* / *value*
+pair::
 
   m = frozenmap(foo=1)
-  m2 = m.set('bar', 100)
+  m2 = m.including('bar', 100)
 
   print(m)   # will print frozenmap({'foo': 1})
   print(m2)  # will print frozenmap({'foo': 1, 'bar': 100})
 
-frozenmap.delete(key)
-^^^^^^^^^^^^^^^^^^^^^
+frozenmap.omitting(key)
+^^^^^^^^^^^^^^^^^^^^^^^
 
 The method produces a copy of the ``frozenmap`` which does not
-include a deleted key::
+include a deleted *key*::
 
   m = frozenmap(foo=1, bar=100)
 
-  m2 = m.delete('foo')
+  m2 = m.omitting('foo')
 
   print(m)   # will print frozenmap({'foo': 1, 'bar': 100})
   print(m2)  # will print frozenmap({'bar': 1})
 
-  m3 = m.delete('spam')  # will throw a KeyError('spam')
+  m3 = m.omitting('spam')  # will throw a KeyError('spam')
 
-frozenmap.update(mapping=None, \*\*kw)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+frozenmap.union(mapping=None, \*\*kw)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The method produces a copy of the ``frozenmap`` and adds or modifies
-multiple key/values when the copy is created.  The signature of the method
-matches the signature of the ``frozenmap`` constructor::
+multiple key/values for the created copy.  The signature of
+the method matches the signature of the ``frozenmap`` constructor::
 
   m = frozenmap(foo=1)
 
-  m2 = m.update({'spam': 'ham'})
+  m2 = m.union({'spam': 'ham'})
   print(m2)  # will print frozenmap({'foo': 1, 'spam': 'ham'})
 
-  m3 = m.update(foo=100, y=2)
+  m3 = m.union(foo=100, y=2)
   print(m3)  # will print frozenmap({'foo': 100, 'y': 2})
 
   print(m)   # will print frozenmap({'foo': 1})
 
-frozenmap.mutate()
-^^^^^^^^^^^^^^^^^^
+Calling the ``union()`` method to add/replace N keys is more efficient
+than calling the ``including()`` method N times.
 
-**TODO** rewrite this to incorporate mut.freeze() & with block.
+frozenmap.mutating()
+^^^^^^^^^^^^^^^^^^^^
 
-The method allows application of multiple mutation operations in an
-efficient way.  The ``mutate()`` method returns a new object
-``collections.MapMutation`` which implements the full
-``collections.abc.MutableMapping`` API.
+The method allows efficient copying of a ``frozenmap`` instance with
+multiple modifications applied.  This method is especially useful
+when the ``frozenmap`` in question contains 1000s of key/value pairs
+and there's a need to update many of them in a performance-critical
+section of the code.   Because
 
-E.g.::
+The ``frozenmap.mutating()`` method returns a mutable dict-like
+copy of the ``frozenmap`` object: an instance of
+``collections.FrozenMapCopy``.
 
-  m = frozenmap(foo=1, spam='ham')
+The ``FrozenMapCopy`` objects:
 
-  mut = m.mutate()  # create a MapMutation
-  mut[10] = 100     # add a key/value pair, 10: 100
-  mut.pop('foo')    # remove 'foo' from the MapMutation instance
-  mut['xxx'] = 1    # add a key/value pair, 'xxx': 1
+* are mutable, although any mutations on them do not affect the
+  ``frozenmap`` instances they was created from;
 
-  m2 = mut.finish()  # returns a new `frozenmap` instance from the MapMutation
+* can be passed to the ``frozenmap`` constructor; creating a
+  frozenmap out of a ``FrozenMapCopy`` object is an O(1)
+  operation;
 
-  print(m)   # will print frozenmap({'foo': 1, 'spam': 'ham'})
-  print(m2)  # will print frozenmap({'spam': 'ham', 10: 100, 'xxx': 1})
+* have O(log N) complexity for get/set operations; creating
+  them is an O(1) operation;
 
-  # Note: It is illegal to mutate `mut` after the `finish` method is called
-  mut[42] = 42  # will throw a ValueError
+* have a ``FrozenMapCopy.close()`` method that prevents any
+  further access/mutation of the data;
+
+* can be used as a context manager.
+
+The below example illustrates how ``mutating()`` can be used with
+a context manager::
+
+  numbers = frozenmap((i, i ** 2) for i in range(1_000_000))
+
+  with numbers.mutating() as copy:
+     for i in numbers:
+         if not (numbers[i] % 997):
+             del copy[i]
+
+     numbers_without_997_multiples = frozenmap(copy)
+
+     # at this point, *numbers* still has 1_000_000 key/values, and
+     # *numbers_without_997_multiples* is a copy of *numbers* without
+     # values that are multiples of 997.
+
+     for i in numbers:
+         if not (numbers[i] % 593):
+             del copy[i]
+
+     numbers_without_593_multiples = frozenmap(copy)
+
+     print(copy[10])  # will print 100.
+
+  print(copy[10])  # This will throw a ValueError as *copy*
+                   # has been closed when the "with" block
+                   # was executed.
 
 Iteration
 ---------
@@ -221,24 +266,24 @@ It is possible to use the standard typing notation for frozenmaps::
 Implementation
 ==============
 
-The proposed ``frozenmap`` immutable type uses a Hash Array Mapped Trie (HAMT)
-data structure. Functional programming languages, like Clojure, use this novel,
-yet often implemented, data structure to efficiently implement immutable hash
-tables.
+The proposed ``frozenmap`` immutable type uses a Hash Array Mapped
+Trie (HAMT) data structure. Functional programming languages,
+like Clojure, use HAMT to efficiently implement immutable hash tables,
+vectors, and sets.
 
 HAMT
 ----
 
 The key design contract of HAMT is the guarantee of a predictable
 *value* when given the hash of a *key*. For a pair of *key* and *value*,
-the hash of the *key* can be used to determine the exact
-position of *value* in the hash map tree.
+the hash of the *key* can be used to determine the location of
+*value* in the hash map tree.
 
 Immutable mappings implemented with HAMT have O(log N) performance
-for ``set()`` and ``get()`` operations.  This efficiency is possible because
-mutation operations only affect one branch of the tree, making it
-possible to reuse non-mutated branches, and, therefore, avoiding copying of
-unmodified data.
+for ``set()`` and ``get()`` operations.  This efficiency is possible
+because mutation operations only affect one branch of the tree,
+making it possible to reuse non-mutated branches, and, therefore,
+avoiding copying of unmodified data.
 
 Read more about HAMT in [5]_.  The CPython implementation [1]_ has a
 fairly detailed description of the algorithm as well.
@@ -257,7 +302,8 @@ The above chart demonstrates that:
 * ``frozenmap`` implemented with HAMT displays near O(1) performance
   for all benchmarked dictionary sizes.
 
-* ``dict.copy()`` becomes less efficient when using around 100-200 items.
+* ``dict.copy()`` becomes less efficient when using around
+  100-200 items.
 
 .. figure:: pep-0550-lookup_hamt.png
    :align: center
@@ -291,8 +337,8 @@ Why "frozenmap" and not "frozendict"
 * Python dicts preserve insertion order.
 
 The proposed ``frozenmap`` does not have these mentioned
-properties. Instead, ``frozenmap`` has an O(log N) cost of set/get operations,
-and it only implements the ``abc.Mapping`` protocol.
+properties. Instead, ``frozenmap`` has an O(log N) cost of set/get
+operations, and it only implements the ``abc.Mapping`` protocol.
 
 
 Implementation
@@ -309,6 +355,8 @@ CPython project tree here: [1]_.
 References
 ==========
 
+.. [0] https://en.wikipedia.org/wiki/Persistent_data_structure
+
 .. [1] https://github.com/python/cpython/blob/3.8/Python/hamt.c
 
 .. [2] https://github.com/MagicStack/immutables
@@ -318,6 +366,16 @@ References
 .. [4] https://gist.github.com/1st1/dbe27f2e14c30cce6f0b5fddfc8c437e
 
 .. [5] https://en.wikipedia.org/wiki/Hash_array_mapped_trie#cite_note-bagwell-1
+
+.. [6] https://en.wikipedia.org/wiki/Persistent_data_structure#Trees
+
+
+Acknowledgments
+===============
+
+I thank Carol Willing, Łukasz Langa, Larry Hastings, and
+Guido van Rossum for their feedback, ideas, edits, and discussions
+around this PEP.
 
 
 Copyright
